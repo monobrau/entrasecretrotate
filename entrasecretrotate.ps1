@@ -1,9 +1,11 @@
-# Requires the Microsoft.Graph module: Install-Module Microsoft.Graph
+# Requires the Microsoft.Graph.Authentication and Microsoft.Graph.Applications modules
+# Install with: Install-Module Microsoft.Graph.Authentication, Microsoft.Graph.Applications -Scope CurrentUser
 
 Write-Host "Script started."
 
 # --- Configuration ---
-$requiredModules = @("Microsoft.Graph")
+# Import specific sub-modules instead of meta-module to avoid dependency issues
+$requiredModules = @("Microsoft.Graph.Authentication", "Microsoft.Graph.Applications")
 
 # --- Function Definitions for Module Management ---
 
@@ -64,46 +66,46 @@ function Setup-GUI {
     Write-Host "Setting up GUI..."
     # Form
     $global:Form.Text = "Entra ID Secret Management"
-    $global:Form.Size = New-Object System.Drawing.Size(600, 500)
+    $global:Form.Size = New-Object System.Drawing.Size(850, 550)
     $global:Form.StartPosition = "CenterScreen"
     $global:Form.FormBorderStyle = "FixedSingle" # Prevent resizing
     $global:Form.MaximizeBox = $false
 
     # Connect Button
     $global:ConnectButton.Location = New-Object System.Drawing.Point(10, 10)
-    $global:ConnectButton.Size = New-Object System.Drawing.Size(100, 30)
+    $global:ConnectButton.Size = New-Object System.Drawing.Size(110, 30)
     $global:ConnectButton.Text = "Connect"
     $global:Form.Controls.Add($global:ConnectButton)
 
     # Disconnect Button
-    $global:DisconnectButton.Location = New-Object System.Drawing.Point(120, 10)
-    $global:DisconnectButton.Size = New-Object System.Drawing.Size(100, 30)
+    $global:DisconnectButton.Location = New-Object System.Drawing.Point(130, 10)
+    $global:DisconnectButton.Size = New-Object System.Drawing.Size(110, 30)
     $global:DisconnectButton.Text = "Disconnect"
     $global:DisconnectButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:DisconnectButton)
 
     # Status Label
-    $global:StatusLabel.Location = New-Object System.Drawing.Point(230, 15)
-    $global:StatusLabel.Size = New-Object System.Drawing.Size(350, 20)
+    $global:StatusLabel.Location = New-Object System.Drawing.Point(10, 45)
+    $global:StatusLabel.Size = New-Object System.Drawing.Size(820, 20)
     $global:StatusLabel.Text = "Status: Disconnected"
     $global:Form.Controls.Add($global:StatusLabel)
 
     # Find Secrets Button
-    $global:FindSecretsButton.Location = New-Object System.Drawing.Point(10, 50)
-    $global:FindSecretsButton.Size = New-Object System.Drawing.Size(150, 30)
+    $global:FindSecretsButton.Location = New-Object System.Drawing.Point(10, 70)
+    $global:FindSecretsButton.Size = New-Object System.Drawing.Size(180, 30)
     $global:FindSecretsButton.Text = "Find Expired Secrets"
     $global:FindSecretsButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:FindSecretsButton)
 
     # Expired Secrets Label
-    $global:ExpiredSecretsLabel.Location = New-Object System.Drawing.Point(10, 90)
-    $global:ExpiredSecretsLabel.Size = New-Object System.Drawing.Size(200, 20)
+    $global:ExpiredSecretsLabel.Location = New-Object System.Drawing.Point(10, 110)
+    $global:ExpiredSecretsLabel.Size = New-Object System.Drawing.Size(300, 20)
     $global:ExpiredSecretsLabel.Text = "Applications with Expired Secrets:"
     $global:Form.Controls.Add($global:ExpiredSecretsLabel)
 
     # Expired Secrets ListBox
-    $global:ExpiredSecretsListBox.Location = New-Object System.Drawing.Point(10, 110)
-    $global:ExpiredSecretsListBox.Size = New-Object System.Drawing.Size(560, 150)
+    $global:ExpiredSecretsListBox.Location = New-Object System.Drawing.Point(10, 130)
+    $global:ExpiredSecretsListBox.Size = New-Object System.Drawing.Size(820, 150)
     $global:ExpiredSecretsListBox.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:ExpiredSecretsListBox)
 
@@ -144,6 +146,14 @@ function Setup-GUI {
     $global:NewSecretTextBox.ReadOnly = $true # Make it read-only
     $global:Form.Controls.Add($global:NewSecretTextBox)
 
+    # Delete Expired Secret Button
+    $global:DeleteSecretButton = New-Object System.Windows.Forms.Button
+    $global:DeleteSecretButton.Location = New-Object System.Drawing.Point(170, 320)
+    $global:DeleteSecretButton.Size = New-Object System.Drawing.Size(180, 30)
+    $global:DeleteSecretButton.Text = "Delete Expired Secret"
+    $global:DeleteSecretButton.Enabled = $false
+    $global:Form.Controls.Add($global:DeleteSecretButton)
+
     # --- Event Handlers ---
 
     # Connect Button Click
@@ -170,6 +180,8 @@ function Setup-GUI {
     $global:GenerateSecretButton.Add_Click({
         Generate-NewSecret
     })
+    # Delete Secret Button Click
+    $global:DeleteSecretButton.Add_Click({ Delete-ExpiredSecret })
     Write-Host "GUI setup complete."
 }
 
@@ -204,7 +216,11 @@ function Connect-Tenant {
         $global:DisconnectButton.Enabled = $true
         $global:FindSecretsButton.Enabled = $true
         $global:ExpiredSecretsListBox.Enabled = $true
+        $global:GenerateSecretButton.Enabled = $true # Enable generate button after successful connection
         Write-Host "Connection successful."
+
+        # Check for User.EnableDisableAccount.All role/permission
+
     } catch {
         $global:StatusLabel.Text = "Status: Connection failed - $($_.Exception.Message)"
         $global:ConnectButton.Enabled = $true
@@ -314,14 +330,17 @@ function Update-SelectedSecretInfo {
     $global:SelectedEndDateLabel.Text = ""
     $global:GenerateSecretButton.Enabled = $false
     $global:NewSecretTextBox.Text = ""
+    $global:DeleteSecretButton.Enabled = $false
 
     if ($selectedIndex -ge 0 -and $selectedIndex -lt $global:ExpiredApplicationsData.Count) {
         $selectedApp = $global:ExpiredApplicationsData[$selectedIndex]
         $global:SelectedAppNameLabel.Text = $selectedApp.DisplayName
         $global:SelectedEndDateLabel.Text = "Oldest Expired Date: $($selectedApp.EndDate.ToShortDateString())"
         $global:GenerateSecretButton.Enabled = $true
+        $global:DeleteSecretButton.Enabled = $true
         Write-Host "Selected application: $($selectedApp.DisplayName)"
     } else {
+        $global:DeleteSecretButton.Enabled = $false
         Write-Host "No valid application selected."
     }
 }
@@ -351,11 +370,21 @@ function Generate-NewSecret {
     $global:NewSecretTextBox.Text = ""
     Write-Host "Generating secret for App ID: $appId, Name: $appName"
 
+    # Calculate next year for the DisplayName
+    $nextYear = (Get-Date).Year + 1
+    $displayName = "SKOUT$nextYear"
+
+    # Detect if -DisplayName is supported
+    $supportsDisplayName = ($null -ne (Get-Command Add-MgApplicationPassword | Select-Object -ExpandProperty Parameters | Where-Object { $_.Name -eq 'DisplayName' }))
+
     try {
-        Write-Host "Calling Add-MgApplicationPassword (without DisplayName)..."
-        # Add a new password credential (secret)
-        # Removed -DisplayName for compatibility with older module versions
-        $newSecret = Add-MgApplicationPassword -ApplicationId $appId -ErrorAction Stop
+        if ($supportsDisplayName) {
+            Write-Host "Calling Add-MgApplicationPassword with DisplayName '$displayName'..."
+            $newSecret = Add-MgApplicationPassword -ApplicationId $appId -DisplayName $displayName -ErrorAction Stop
+        } else {
+            Write-Host "Calling Add-MgApplicationPassword without DisplayName (parameter not supported in this module version)..."
+            $newSecret = Add-MgApplicationPassword -ApplicationId $appId -ErrorAction Stop
+        }
         Write-Host "Add-MgApplicationPassword returned."
 
         # The actual secret value is in the SecretText property and is only returned NOW
@@ -364,6 +393,96 @@ function Generate-NewSecret {
         $global:NewSecretTextBox.Text = $secretValue
         $global:StatusLabel.Text = "Status: New secret generated for '$appName'. COPY IMMEDIATELY!"
         Write-Host "New secret value obtained. Displayed in textbox."
+
+        # Show a popup with a professional summary for ConnectWise PSA ticket
+        $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        $ticketNote = @"
+Barracuda XDR O365 Monitoring Integration - Secret Update
+
+Action Summary:
+- Logged into Barracuda XDR portal
+- Reviewed Microsoft Office 365 integration
+- Integration reported that the Entra application secret had expired
+- Logged into Microsoft Entra
+- Reviewed the secret and confirmed it had expired
+- Generated new secret with description: $displayName
+- Implemented new secret in Barracuda XDR portal
+- Waited until change propagated
+- Tested new secret
+- Test was successful
+- Saved secret in the portal
+- All tasks complete
+
+Date/Time of update: $now
+
+What is this?
+This process updates the secure connection between your Microsoft 365 environment and the Barracuda XDR monitoring system. By rotating (changing) the secret, we ensure that only authorized systems can access and monitor your Microsoft 365 activity, keeping your integration healthy and up to date.
+
+Why is this needed?
+Regularly updating these secrets is a best practice for security. It helps prevent unauthorized access by making sure old credentials cannot be used if they are ever exposed. This approach strengthens your organization’s protection against cyber threats and ensures that your monitoring and alerting systems remain reliable.
+"@
+        # Show a custom popup with a read-only textbox, a copy button, a paste screenshot button, and a PictureBox
+        $popupForm = New-Object System.Windows.Forms.Form
+        $popupForm.Text = "ConnectWise Ticket Note"
+        $popupForm.Size = New-Object System.Drawing.Size(600, 600)
+        $popupForm.StartPosition = "CenterScreen"
+        $popupForm.Topmost = $true
+
+        $textBox = New-Object System.Windows.Forms.TextBox
+        $textBox.Multiline = $true
+        $textBox.ReadOnly = $true
+        $textBox.ScrollBars = "Vertical"
+        $textBox.Size = New-Object System.Drawing.Size(560, 200)
+        $textBox.Location = New-Object System.Drawing.Point(10, 10)
+        $textBox.Text = $ticketNote
+        $textBox.Font = New-Object System.Drawing.Font("Consolas", 10)
+
+        $copyButton = New-Object System.Windows.Forms.Button
+        $copyButton.Text = "Copy to Clipboard"
+        $copyButton.Size = New-Object System.Drawing.Size(150, 30)
+        $copyButton.Location = New-Object System.Drawing.Point(10, 220)
+        $copyButton.Add_Click({
+            [System.Windows.Forms.Clipboard]::SetText($textBox.Text)
+            if ($pictureBox.Image) {
+                # Inform the user that the image is now on the clipboard for a second paste
+                [System.Windows.Forms.MessageBox]::Show("Text copied! Now click in your document and paste again to insert the screenshot.", "Image Ready to Paste", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+                [System.Windows.Forms.Clipboard]::SetImage($pictureBox.Image)
+            }
+        })
+
+        $pasteScreenshotButton = New-Object System.Windows.Forms.Button
+        $pasteScreenshotButton.Text = "Paste Screenshot"
+        $pasteScreenshotButton.Size = New-Object System.Drawing.Size(150, 30)
+        $pasteScreenshotButton.Location = New-Object System.Drawing.Point(170, 220)
+
+        $pictureBox = New-Object System.Windows.Forms.PictureBox
+        $pictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
+        $pictureBox.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+        $pictureBox.Location = New-Object System.Drawing.Point(10, 260)
+        $pictureBox.Size = New-Object System.Drawing.Size(560, 280)
+
+        $pasteScreenshotButton.Add_Click({
+            if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
+                $img = [System.Windows.Forms.Clipboard]::GetImage()
+                $pictureBox.Image = $img
+            } else {
+                [System.Windows.Forms.MessageBox]::Show("Clipboard does not contain an image.", "No Image", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            }
+        })
+
+        $closeButton = New-Object System.Windows.Forms.Button
+        $closeButton.Text = "Close"
+        $closeButton.Size = New-Object System.Drawing.Size(100, 30)
+        $closeButton.Location = New-Object System.Drawing.Point(330, 220)
+        $closeButton.Add_Click({ $popupForm.Close() })
+
+        $popupForm.Controls.Add($textBox)
+        $popupForm.Controls.Add($copyButton)
+        $popupForm.Controls.Add($pasteScreenshotButton)
+        $popupForm.Controls.Add($closeButton)
+        $popupForm.Controls.Add($pictureBox)
+        $popupForm.AcceptButton = $closeButton
+        $popupForm.ShowDialog()
 
         # Re-enable Generate button in case user wants another one,
         # but warn them the previous one is lost if not copied.
@@ -374,6 +493,39 @@ function Generate-NewSecret {
     } catch {
         $global:StatusLabel.Text = "Status: Error generating secret for '$appName' - $($_.Exception.Message)"
         Write-Host "Error generating secret: $($_.Exception.Message)"
+    }
+}
+
+function Delete-ExpiredSecret {
+    Write-Host "Attempting to delete expired secret..."
+    $selectedIndex = $global:ExpiredSecretsListBox.SelectedIndex
+    if ($selectedIndex -lt 0 -or $selectedIndex -ge $global:ExpiredApplicationsData.Count) {
+        [System.Windows.Forms.MessageBox]::Show("Please select an application with an expired secret.", "No Application Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    $selectedApp = $global:ExpiredApplicationsData[$selectedIndex]
+    $appId = $selectedApp.ApplicationId
+    $appName = $selectedApp.DisplayName
+    $now = Get-Date
+    # Get the full app object to find all expired secrets
+    try {
+        $app = Get-MgApplication -ApplicationId $appId -ErrorAction Stop
+        $expiredSecrets = $app.PasswordCredentials | Where-Object { $_.EndDateTime -lt $now }
+        if (-not $expiredSecrets -or $expiredSecrets.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show("No expired secrets found for this application.", "No Expired Secrets", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            return
+        }
+        # Delete the oldest expired secret
+        $oldestSecret = $expiredSecrets | Sort-Object EndDateTime | Select-Object -First 1
+        $confirm = [System.Windows.Forms.MessageBox]::Show("Are you sure you want to delete the oldest expired secret for '" + $appName + "'?\nEnd Date: " + $oldestSecret.EndDateTime.ToString() + "\nKeyId: " + $oldestSecret.KeyId + "", "Confirm Delete", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Remove-MgApplicationPassword -ApplicationId $appId -KeyId $oldestSecret.KeyId -ErrorAction Stop
+            [System.Windows.Forms.MessageBox]::Show("Expired secret deleted successfully.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            # Refresh the expired secrets list
+            Find-ExpiredSecrets
+        }
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Error deleting expired secret: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 }
 
@@ -392,10 +544,37 @@ if ($missing.Count -gt 0) {
 }
 
 # Import Modules (if found)
-if (-not (Import-RequiredModules -Modules $requiredModules)) {
-    # Import failed, message printed by Import-RequiredModules
-    Write-Host "Module import failed. Please resolve the errors above and try again." -ForegroundColor Red
-    exit # Exit if import failed
+# Check if all required modules are already imported
+$allModulesImported = $true
+foreach ($moduleName in $requiredModules) {
+    if (Get-Module -Name $moduleName) {
+        Write-Host "Module '$moduleName' already imported." -ForegroundColor Green
+    } else {
+        $allModulesImported = $false
+    }
+}
+
+if (-not $allModulesImported) {
+    # Check if modules are available
+    $allAvailable = $true
+    foreach ($moduleName in $requiredModules) {
+        if (-not (Get-Module -ListAvailable -Name $moduleName)) {
+            $allAvailable = $false
+            Write-Host "Module '$moduleName' is not installed. Please install it and try again." -ForegroundColor Red
+        }
+    }
+    
+    if ($allAvailable) {
+        Write-Host "Attempting to import required modules: $($requiredModules -join ', ')..."
+        if (-not (Import-RequiredModules -Modules $requiredModules)) {
+            Write-Host "Module import failed. Please resolve the errors above and try again." -ForegroundColor Red
+            exit # Exit if import failed
+        }
+    } else {
+        Write-Host "One or more required modules are not installed. Please install them and try again." -ForegroundColor Red
+        Write-Host "Install with: Install-Module -Name $($requiredModules -join ', ') -Scope CurrentUser" -ForegroundColor Yellow
+        exit
+    }
 }
 
 # --- Load GUI Assemblies ---
@@ -455,6 +634,7 @@ $global:SelectedEndDateLabel.Dispose()
 $global:GenerateSecretButton.Dispose()
 $global:NewSecretLabel.Dispose()
 $global:NewSecretTextBox.Dispose()
+$global:DeleteSecretButton.Dispose()
 Write-Host "Resources cleaned up."
 
 # Optional: Disconnect on script exit if still connected
