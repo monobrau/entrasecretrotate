@@ -7,6 +7,46 @@ Write-Host "Script started."
 # Import specific sub-modules instead of meta-module to avoid dependency issues
 $requiredModules = @("Microsoft.Graph.Authentication", "Microsoft.Graph.Applications")
 
+# Secret naming configuration
+# Customize the display name for new secrets. {YEAR} will be replaced with next year.
+$secretDisplayNameTemplate = "SKOUT{YEAR}"
+
+# Ticket note configuration
+# Set to $true to show the ticket note popup, $false to disable
+$showTicketNotePopup = $true
+
+# Customize the ticket note popup title
+$ticketNotePopupTitle = "ConnectWise Ticket Note"
+
+# Customize the ticket note template. Available placeholders:
+# {DISPLAYNAME} - The secret display name
+# {DATETIME} - Current date/time
+$ticketNoteTemplate = @"
+Barracuda XDR O365 Monitoring Integration - Secret Update
+
+Action Summary:
+- Logged into Barracuda XDR portal
+- Reviewed Microsoft Office 365 integration
+- Integration reported that the Entra application secret had expired
+- Logged into Microsoft Entra
+- Reviewed the secret and confirmed it had expired
+- Generated new secret with description: {DISPLAYNAME}
+- Implemented new secret in Barracuda XDR portal
+- Waited until change propagated
+- Tested new secret
+- Test was successful
+- Saved secret in the portal
+- All tasks complete
+
+Date/Time of update: {DATETIME}
+
+What is this?
+This process updates the secure connection between your Microsoft 365 environment and the Barracuda XDR monitoring system. By rotating (changing) the secret, we ensure that only authorized systems can access and monitor your Microsoft 365 activity, keeping your integration healthy and up to date.
+
+Why is this needed?
+Regularly updating these secrets is a best practice for security. It helps prevent unauthorized access by making sure old credentials cannot be used if they are ever exposed. This approach strengthens your organization's protection against cyber threats and ensures that your monitoring and alerting systems remain reliable.
+"@
+
 # --- Function Definitions for Module Management ---
 
 Function Test-RequiredModules {
@@ -216,10 +256,8 @@ function Connect-Tenant {
         $global:DisconnectButton.Enabled = $true
         $global:FindSecretsButton.Enabled = $true
         $global:ExpiredSecretsListBox.Enabled = $true
-        $global:GenerateSecretButton.Enabled = $true # Enable generate button after successful connection
+        # Note: GenerateSecretButton is enabled only when an application is selected
         Write-Host "Connection successful."
-
-        # Check for User.EnableDisableAccount.All role/permission
 
     } catch {
         $global:StatusLabel.Text = "Status: Connection failed - $($_.Exception.Message)"
@@ -370,9 +408,9 @@ function Generate-NewSecret {
     $global:NewSecretTextBox.Text = ""
     Write-Host "Generating secret for App ID: $appId, Name: $appName"
 
-    # Calculate next year for the DisplayName
+    # Generate display name from template
     $nextYear = (Get-Date).Year + 1
-    $displayName = "SKOUT$nextYear"
+    $displayName = $secretDisplayNameTemplate -replace '\{YEAR\}', $nextYear
 
     # Detect if -DisplayName is supported
     $supportsDisplayName = ($null -ne (Get-Command Add-MgApplicationPassword | Select-Object -ExpandProperty Parameters | Where-Object { $_.Name -eq 'DisplayName' }))
@@ -394,36 +432,15 @@ function Generate-NewSecret {
         $global:StatusLabel.Text = "Status: New secret generated for '$appName'. COPY IMMEDIATELY!"
         Write-Host "New secret value obtained. Displayed in textbox."
 
-        # Show a popup with a professional summary for ConnectWise PSA ticket
-        $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-        $ticketNote = @"
-Barracuda XDR O365 Monitoring Integration - Secret Update
+        # Show a popup with a professional summary for ticketing system (if enabled)
+        if ($showTicketNotePopup) {
+            $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+            # Replace placeholders in the ticket note template
+            $ticketNote = $ticketNoteTemplate -replace '\{DISPLAYNAME\}', $displayName -replace '\{DATETIME\}', $now
 
-Action Summary:
-- Logged into Barracuda XDR portal
-- Reviewed Microsoft Office 365 integration
-- Integration reported that the Entra application secret had expired
-- Logged into Microsoft Entra
-- Reviewed the secret and confirmed it had expired
-- Generated new secret with description: $displayName
-- Implemented new secret in Barracuda XDR portal
-- Waited until change propagated
-- Tested new secret
-- Test was successful
-- Saved secret in the portal
-- All tasks complete
-
-Date/Time of update: $now
-
-What is this?
-This process updates the secure connection between your Microsoft 365 environment and the Barracuda XDR monitoring system. By rotating (changing) the secret, we ensure that only authorized systems can access and monitor your Microsoft 365 activity, keeping your integration healthy and up to date.
-
-Why is this needed?
-Regularly updating these secrets is a best practice for security. It helps prevent unauthorized access by making sure old credentials cannot be used if they are ever exposed. This approach strengthens your organization’s protection against cyber threats and ensures that your monitoring and alerting systems remain reliable.
-"@
-        # Show a custom popup with a read-only textbox, a copy button, a paste screenshot button, and a PictureBox
+            # Show a custom popup with a read-only textbox, a copy button, a paste screenshot button, and a PictureBox
         $popupForm = New-Object System.Windows.Forms.Form
-        $popupForm.Text = "ConnectWise Ticket Note"
+        $popupForm.Text = $ticketNotePopupTitle
         $popupForm.Size = New-Object System.Drawing.Size(600, 600)
         $popupForm.StartPosition = "CenterScreen"
         $popupForm.Topmost = $true
@@ -483,6 +500,7 @@ Regularly updating these secrets is a best practice for security. It helps preve
         $popupForm.Controls.Add($pictureBox)
         $popupForm.AcceptButton = $closeButton
         $popupForm.ShowDialog()
+        } # End if ($showTicketNotePopup)
 
         # Re-enable Generate button in case user wants another one,
         # but warn them the previous one is lost if not copied.
