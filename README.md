@@ -38,12 +38,41 @@ This tool is intended for administrators who need a quick way to identify applic
 
 ## Installation
 
-1.  **Download the Script:** Save the PowerShell script code (`entra_secret_gui_v2.ps1` or similar name) to a `.ps1` file on your local machine. Ensure the file is saved with **UTF-8 encoding**.
-2.  **Install Microsoft.Graph Module:** If you don't have the `Microsoft.Graph` module installed, open a PowerShell console and run:
+1.  **Download the Script:** Save the PowerShell script code to a `.ps1` file on your local machine (e.g., `entrasecretrotate.ps1`). Ensure the file is saved with **UTF-8 encoding**.
+2.  **Install Microsoft.Graph Modules:** If you don't have the required modules installed, open a PowerShell console and run:
     ```powershell
-    Install-Module Microsoft.Graph -Scope CurrentUser -Repository PSGallery -Force
+    Install-Module Microsoft.Graph.Authentication, Microsoft.Graph.Applications -Scope CurrentUser -Repository PSGallery -Force
     ```
     You might need to run PowerShell as an administrator if you want to install for `AllUsers` (remove `-Scope CurrentUser` in that case). The script includes a check and basic guidance for this as well.
+
+## Configuration
+
+The script includes several configurable options at the top of the file. Edit these values to customize the behavior:
+
+### Secret Naming
+```powershell
+$secretDisplayNameTemplate = "SKOUT{YEAR}"
+```
+Customize the display name for new secrets. `{YEAR}` will be replaced with next year (e.g., "SKOUT2026").
+
+### Ticket Note Popup
+```powershell
+$showTicketNotePopup = $true
+$ticketNotePopupTitle = "ConnectWise Ticket Note"
+$ticketNoteTemplate = @"...your template..."@
+```
+- Set `$showTicketNotePopup` to `$false` to disable the popup after generating secrets
+- Customize `$ticketNotePopupTitle` to change the popup window title
+- Edit `$ticketNoteTemplate` to match your organization's ticketing system requirements
+- Available placeholders in template: `{DISPLAYNAME}`, `{DATETIME}`
+
+### GUI Layout
+```powershell
+$GUI_MARGIN = 10
+$GUI_BUTTON_HEIGHT = 30
+# ... other GUI constants
+```
+Adjust these values to customize the appearance and spacing of GUI elements.
 
 ## How to Use
 
