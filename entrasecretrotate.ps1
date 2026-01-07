@@ -66,7 +66,7 @@ function Setup-GUI {
     Write-Host "Setting up GUI..."
     # Form
     $global:Form.Text = "Entra ID Secret Management"
-    $global:Form.Size = New-Object System.Drawing.Size(850, 550)
+    $global:Form.Size = New-Object System.Drawing.Size(850, 600)
     $global:Form.StartPosition = "CenterScreen"
     $global:Form.FormBorderStyle = "FixedSingle" # Prevent resizing
     $global:Form.MaximizeBox = $false
@@ -83,6 +83,13 @@ function Setup-GUI {
     $global:DisconnectButton.Text = "Disconnect"
     $global:DisconnectButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:DisconnectButton)
+
+    # Copy Ticket Note Button
+    $global:CopyTicketNoteButton.Location = New-Object System.Drawing.Point(250, 10)
+    $global:CopyTicketNoteButton.Size = New-Object System.Drawing.Size(150, 30)
+    $global:CopyTicketNoteButton.Text = "Copy Ticket Note"
+    $global:CopyTicketNoteButton.Enabled = $true # Always enabled
+    $global:Form.Controls.Add($global:CopyTicketNoteButton)
 
     # Status Label
     $global:StatusLabel.Location = New-Object System.Drawing.Point(10, 45)
@@ -146,6 +153,13 @@ function Setup-GUI {
     $global:NewSecretTextBox.ReadOnly = $true # Make it read-only
     $global:Form.Controls.Add($global:NewSecretTextBox)
 
+    # Copy Secret Button
+    $global:CopySecretButton.Location = New-Object System.Drawing.Point(580, 355)
+    $global:CopySecretButton.Size = New-Object System.Drawing.Size(120, 30)
+    $global:CopySecretButton.Text = "Copy Secret"
+    $global:CopySecretButton.Enabled = $false # Disabled initially
+    $global:Form.Controls.Add($global:CopySecretButton)
+
     # Delete Expired Secret Button
     $global:DeleteSecretButton = New-Object System.Windows.Forms.Button
     $global:DeleteSecretButton.Location = New-Object System.Drawing.Point(170, 320)
@@ -153,6 +167,13 @@ function Setup-GUI {
     $global:DeleteSecretButton.Text = "Delete Expired Secret"
     $global:DeleteSecretButton.Enabled = $false
     $global:Form.Controls.Add($global:DeleteSecretButton)
+
+    # Tenant Label (at bottom)
+    $global:TenantLabel.Location = New-Object System.Drawing.Point(10, 540)
+    $global:TenantLabel.Size = New-Object System.Drawing.Size(820, 20)
+    $global:TenantLabel.Text = "Tenant: Not Connected"
+    $global:TenantLabel.ForeColor = [System.Drawing.Color]::Gray
+    $global:Form.Controls.Add($global:TenantLabel)
 
     # --- Event Handlers ---
 
@@ -164,6 +185,11 @@ function Setup-GUI {
     # Disconnect Button Click
     $global:DisconnectButton.Add_Click({
         Disconnect-Tenant
+    })
+
+    # Copy Ticket Note Button Click
+    $global:CopyTicketNoteButton.Add_Click({
+        Copy-TicketNoteTemplate
     })
 
     # Find Secrets Button Click
@@ -182,6 +208,17 @@ function Setup-GUI {
     })
     # Delete Secret Button Click
     $global:DeleteSecretButton.Add_Click({ Delete-ExpiredSecret })
+    
+    # Copy Secret Button Click
+    $global:CopySecretButton.Add_Click({
+        if ($global:NewSecretTextBox.Text -ne "") {
+            [System.Windows.Forms.Clipboard]::SetText($global:NewSecretTextBox.Text)
+            [System.Windows.Forms.MessageBox]::Show("Secret copied to clipboard!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("No secret to copy. Please generate a secret first.", "No Secret", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        }
+    })
+    
     Write-Host "GUI setup complete."
 }
 
@@ -200,11 +237,13 @@ function Connect-Tenant {
     $global:SelectedAppNameLabel.Text = ""
     $global:SelectedEndDateLabel.Text = ""
     $global:NewSecretTextBox.Text = ""
+    $global:CopySecretButton.Enabled = $false
     $global:ExpiredSecretsListBox.Items.Clear()
     $global:ExpiredApplicationsData = @()
 
     # Required scopes for reading applications and adding secrets
-    $scopes = "Application.Read.All", "Application.ReadWrite.All"
+    # Organization.Read.All is needed to get organization display name
+    $scopes = "Application.Read.All", "Application.ReadWrite.All", "Organization.Read.All"
 
     try {
         Write-Host "Calling Connect-MgGraph..."
@@ -212,6 +251,22 @@ function Connect-Tenant {
         Write-Host "Connect-MgGraph returned."
         $context = Get-MgContext
         $tenantId = $context.TenantId
+        
+        # Get organization name
+        try {
+            $organization = Get-MgOrganization -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($organization -and $organization.DisplayName) {
+                $global:TenantLabel.Text = "Tenant: $($organization.DisplayName) ($tenantId)"
+                $global:TenantLabel.ForeColor = [System.Drawing.Color]::Black
+            } else {
+                $global:TenantLabel.Text = "Tenant: $tenantId"
+                $global:TenantLabel.ForeColor = [System.Drawing.Color]::Black
+            }
+        } catch {
+            $global:TenantLabel.Text = "Tenant: $tenantId"
+            $global:TenantLabel.ForeColor = [System.Drawing.Color]::Black
+        }
+        
         $global:StatusLabel.Text = "Status: Connected to Tenant ID '$tenantId'"
         $global:DisconnectButton.Enabled = $true
         $global:FindSecretsButton.Enabled = $true
@@ -239,6 +294,7 @@ function Disconnect-Tenant {
     $global:SelectedAppNameLabel.Text = ""
     $global:SelectedEndDateLabel.Text = ""
     $global:NewSecretTextBox.Text = ""
+    $global:CopySecretButton.Enabled = $false
     $global:ExpiredSecretsListBox.Items.Clear()
     $global:ExpiredApplicationsData = @()
 
@@ -247,6 +303,8 @@ function Disconnect-Tenant {
         Disconnect-MgGraph -ErrorAction Stop
         Write-Host "Disconnect-MgGraph returned."
         $global:StatusLabel.Text = "Status: Disconnected"
+        $global:TenantLabel.Text = "Tenant: Not Connected"
+        $global:TenantLabel.ForeColor = [System.Drawing.Color]::Gray
         $global:ConnectButton.Enabled = $true
         Write-Host "Disconnection successful."
     } catch {
@@ -271,6 +329,7 @@ function Find-ExpiredSecrets {
     $global:SelectedAppNameLabel.Text = ""
     $global:SelectedEndDateLabel.Text = ""
     $global:NewSecretTextBox.Text = ""
+    $global:CopySecretButton.Enabled = $false
     $global:ExpiredSecretsListBox.Items.Clear()
     $global:ExpiredApplicationsData = @()
 
@@ -330,6 +389,7 @@ function Update-SelectedSecretInfo {
     $global:SelectedEndDateLabel.Text = ""
     $global:GenerateSecretButton.Enabled = $false
     $global:NewSecretTextBox.Text = ""
+    $global:CopySecretButton.Enabled = $false
     $global:DeleteSecretButton.Enabled = $false
 
     if ($selectedIndex -ge 0 -and $selectedIndex -lt $global:ExpiredApplicationsData.Count) {
@@ -368,6 +428,7 @@ function Generate-NewSecret {
     $global:StatusLabel.Text = "Status: Generating new secret for '$appName'..."
     $global:GenerateSecretButton.Enabled = $false
     $global:NewSecretTextBox.Text = ""
+    $global:CopySecretButton.Enabled = $false # Disable copy button when clearing
     Write-Host "Generating secret for App ID: $appId, Name: $appName"
 
     # Calculate next year for the DisplayName
@@ -392,10 +453,12 @@ function Generate-NewSecret {
 
         $global:NewSecretTextBox.Text = $secretValue
         $global:StatusLabel.Text = "Status: New secret generated for '$appName'. COPY IMMEDIATELY!"
+        $global:CopySecretButton.Enabled = $true # Enable copy button when secret is generated
         Write-Host "New secret value obtained. Displayed in textbox."
 
         # Show a popup with a professional summary for ConnectWise PSA ticket
-        $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        # Get local time (not UTC) for the timestamp - [DateTime]::Now explicitly returns local time
+        $now = [DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')
         $ticketNote = @"
 Barracuda XDR O365 Monitoring Integration - Secret Update
 
@@ -416,10 +479,10 @@ Action Summary:
 Date/Time of update: $now
 
 What is this?
-This process updates the secure connection between your Microsoft 365 environment and the Barracuda XDR monitoring system. By rotating (changing) the secret, we ensure that only authorized systems can access and monitor your Microsoft 365 activity, keeping your integration healthy and up to date.
+The secret used for the secure connection between your Microsoft 365 environment and the Barracuda XDR monitoring system has expired. This process updates the expired secret to restore the connection and ensure that the Barracuda XDR system can continue to access and monitor your Microsoft 365 activity, keeping your integration functional and operational.
 
 Why is this needed?
-Regularly updating these secrets is a best practice for security. It helps prevent unauthorized access by making sure old credentials cannot be used if they are ever exposed. This approach strengthens your organization’s protection against cyber threats and ensures that your monitoring and alerting systems remain reliable.
+When secrets expire, the integration between Microsoft 365 and Barracuda XDR stops working, which means monitoring and alerting capabilities are disrupted. Updating the expired secret is essential to restore monitoring functionality and ensure that your organization's security monitoring and alerting systems remain operational. This is a critical maintenance task to keep your M365 monitoring functional and protect against cyber threats.
 "@
         # Show a custom popup with a read-only textbox, a copy button, a paste screenshot button, and a PictureBox
         $popupForm = New-Object System.Windows.Forms.Form
@@ -529,6 +592,50 @@ function Delete-ExpiredSecret {
     }
 }
 
+function Copy-TicketNoteTemplate {
+    Write-Host "Generating ticket note template..."
+    # Get local time (not UTC) for the timestamp - [DateTime]::Now explicitly returns local time
+    $now = [DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')
+    # Calculate next year for the DisplayName (same logic as in Generate-NewSecret)
+    $nextYear = (Get-Date).Year + 1
+    $displayName = "SKOUT$nextYear"
+    
+    $ticketNote = @"
+Barracuda XDR O365 Monitoring Integration - Secret Update
+
+Action Summary:
+- Logged into Barracuda XDR portal
+- Reviewed Microsoft Office 365 integration
+- Integration reported that the Entra application secret had expired
+- Logged into Microsoft Entra
+- Reviewed the secret and confirmed it had expired
+- Generated new secret with description: $displayName
+- Implemented new secret in Barracuda XDR portal
+- Waited until change propagated
+- Tested new secret
+- Test was successful
+- Saved secret in the portal
+- All tasks complete
+
+Date/Time of update: $now
+
+What is this?
+The secret used for the secure connection between your Microsoft 365 environment and the Barracuda XDR monitoring system has expired. This process updates the expired secret to restore the connection and ensure that the Barracuda XDR system can continue to access and monitor your Microsoft 365 activity, keeping your integration functional and operational.
+
+Why is this needed?
+When secrets expire, the integration between Microsoft 365 and Barracuda XDR stops working, which means monitoring and alerting capabilities are disrupted. Updating the expired secret is essential to restore monitoring functionality and ensure that your organization's security monitoring and alerting systems remain operational. This is a critical maintenance task to keep your M365 monitoring functional and protect against cyber threats.
+"@
+    
+    try {
+        [System.Windows.Forms.Clipboard]::SetText($ticketNote)
+        [System.Windows.Forms.MessageBox]::Show("Ticket note template copied to clipboard!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        Write-Host "Ticket note template copied to clipboard successfully."
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to copy to clipboard: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        Write-Host "Error copying to clipboard: $($_.Exception.Message)"
+    }
+}
+
 
 # --- Main Execution ---
 
@@ -608,6 +715,9 @@ $global:SelectedEndDateLabel = New-Object System.Windows.Forms.Label
 $global:GenerateSecretButton = New-Object System.Windows.Forms.Button
 $global:NewSecretLabel = New-Object System.Windows.Forms.Label
 $global:NewSecretTextBox = New-Object System.Windows.Forms.TextBox
+$global:CopyTicketNoteButton = New-Object System.Windows.Forms.Button
+$global:CopySecretButton = New-Object System.Windows.Forms.Button
+$global:TenantLabel = New-Object System.Windows.Forms.Label
 $global:ExpiredApplicationsData = @() # Store application objects with expired secrets
 
 
@@ -634,7 +744,10 @@ $global:SelectedEndDateLabel.Dispose()
 $global:GenerateSecretButton.Dispose()
 $global:NewSecretLabel.Dispose()
 $global:NewSecretTextBox.Dispose()
+$global:CopySecretButton.Dispose()
 $global:DeleteSecretButton.Dispose()
+$global:CopyTicketNoteButton.Dispose()
+$global:TenantLabel.Dispose()
 Write-Host "Resources cleaned up."
 
 # Optional: Disconnect on script exit if still connected
