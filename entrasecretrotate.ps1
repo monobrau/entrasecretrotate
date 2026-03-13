@@ -8,8 +8,8 @@ Write-Host "Script started."
 $requiredModules = @("Microsoft.Graph.Authentication", "Microsoft.Graph.Applications")
 
 # Secret naming configuration
-# Customize the display name for new secrets. {YEAR} will be replaced with next year.
-$secretDisplayNameTemplate = "SKOUT{YEAR}"
+# Customize the display name for new secrets. {YEAR} will be replaced with current year.
+$secretDisplayNameTemplate = "skout{YEAR}"
 
 # Ticket note configuration
 # Set to $true to show the ticket note popup, $false to disable
@@ -564,21 +564,19 @@ function Generate-NewSecret {
     $global:CopySecretButton.Enabled = $false # Disable copy button when clearing
     Write-StatusMessage "Generating secret for App ID: $appId, Name: $appName" -Type Info
 
-    # Generate display name from template
-    $nextYear = (Get-Date).Year + 1
-    $displayName = $secretDisplayNameTemplate -replace '\{YEAR\}', $nextYear
+    # Generate display name from template (skoutYYYY - current year)
+    $currentYear = (Get-Date).Year
+    $displayName = $secretDisplayNameTemplate -replace '\{YEAR\}', $currentYear
 
-    # Detect if -DisplayName is supported
-    $supportsDisplayName = ($null -ne (Get-Command Add-MgApplicationPassword | Select-Object -ExpandProperty Parameters | Where-Object { $_.Name -eq 'DisplayName' }))
+    # Create secret with 1-year (365 days) expiration
+    $passwordCred = @{
+        displayName = $displayName
+        endDateTime = (Get-Date).AddDays(365)
+    }
 
     try {
-        if ($supportsDisplayName) {
-            Write-Host "Calling Add-MgApplicationPassword with DisplayName '$displayName'..."
-            $newSecret = Add-MgApplicationPassword -ApplicationId $appId -DisplayName $displayName -ErrorAction Stop
-        } else {
-            Write-Host "Calling Add-MgApplicationPassword without DisplayName (parameter not supported in this module version)..."
-            $newSecret = Add-MgApplicationPassword -ApplicationId $appId -ErrorAction Stop
-        }
+        Write-Host "Calling Add-MgApplicationPassword with displayName '$displayName' and 365-day expiration..."
+        $newSecret = Add-MgApplicationPassword -ApplicationId $appId -PasswordCredential $passwordCred -ErrorAction Stop
         Write-Host "Add-MgApplicationPassword returned."
 
         # The actual secret value is in the SecretText property and is only returned NOW
@@ -895,9 +893,9 @@ function Copy-TicketNoteTemplate {
     Write-Host "Generating ticket note template..."
     # Get local time (not UTC) for the timestamp - [DateTime]::Now explicitly returns local time
     $now = [DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')
-    # Calculate next year for the DisplayName (same logic as in Generate-NewSecret)
-    $nextYear = (Get-Date).Year + 1
-    $displayName = "SKOUT$nextYear"
+    # Display name (same logic as in Generate-NewSecret): skoutYYYY
+    $currentYear = (Get-Date).Year
+    $displayName = "skout$currentYear"
     
     $ticketNote = @"
 Barracuda XDR O365 Monitoring Integration - Secret Update
