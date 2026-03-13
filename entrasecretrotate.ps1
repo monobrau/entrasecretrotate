@@ -18,6 +18,10 @@ $showTicketNotePopup = $true
 # Customize the ticket note popup title
 $ticketNotePopupTitle = "ConnectWise Ticket Note"
 
+# Barracuda XDR ATR (Automatic Threat Response) permissions for automatic remediation
+# Set to $true to also add User.RevokeSessions.All (revoke sessions when blocking users)
+$addRevokeSessionsPermission = $true
+
 # Customize the ticket note template. Available placeholders:
 # {DISPLAYNAME} - The secret display name
 # {DATETIME} - Current date/time
@@ -153,16 +157,16 @@ function Setup-GUI {
     $global:Form.MaximizeBox = $false
 
     # Calculate positions using constants
-    $row1Y = $GUI_MARGIN
-    $row2Y = $row1Y + $GUI_BUTTON_HEIGHT + $GUI_SPACING
-    $row3Y = $row2Y + $GUI_LABEL_HEIGHT + $GUI_SPACING
-    $row4Y = $row3Y + $GUI_BUTTON_HEIGHT + $GUI_MARGIN
-    $row5Y = $row4Y + $GUI_LABEL_HEIGHT
+    $row1Y = [int]$GUI_MARGIN
+    $row2Y = [int]($row1Y + $GUI_BUTTON_HEIGHT + $GUI_SPACING)
+    $row3Y = [int]($row2Y + $GUI_LABEL_HEIGHT + $GUI_SPACING)
+    $row4Y = [int]($row3Y + $GUI_BUTTON_HEIGHT + $GUI_MARGIN)
+    $row5Y = [int]($row4Y + $GUI_LABEL_HEIGHT)
     $listBoxHeight = 150
-    $row6Y = $row5Y + $listBoxHeight + $GUI_MARGIN
-    $row7Y = $row6Y + $GUI_LABEL_HEIGHT
-    $row8Y = $row7Y + $GUI_LABEL_HEIGHT + $GUI_MARGIN
-    $row9Y = $row8Y + $GUI_BUTTON_HEIGHT + $GUI_MARGIN
+    $row6Y = [int]($row5Y + $listBoxHeight + $GUI_MARGIN)
+    $row7Y = [int]($row6Y + $GUI_LABEL_HEIGHT)
+    $row8Y = [int]($row7Y + $GUI_LABEL_HEIGHT + $GUI_MARGIN)
+    $row9Y = [int]($row8Y + $GUI_BUTTON_HEIGHT + $GUI_MARGIN)
 
     # Connect Button
     $global:ConnectButton.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row1Y)
@@ -247,6 +251,16 @@ function Setup-GUI {
     $global:DeleteSecretButton.Enabled = $false
     $global:Form.Controls.Add($global:DeleteSecretButton)
 
+    # Add ATR Permissions Button (Barracuda XDR automatic remediation)
+    $addAtrButtonX = $deleteButtonX + $GUI_BUTTON_WIDTH_WIDE + $GUI_MARGIN
+    $global:AddAtrPermissionsButton = New-Object System.Windows.Forms.Button
+    $global:AddAtrPermissionsButton.Location = New-Object System.Drawing.Point($addAtrButtonX, $row8Y)
+    $global:AddAtrPermissionsButton.Size = New-Object System.Drawing.Size(200, $GUI_BUTTON_HEIGHT)
+    $global:AddAtrPermissionsButton.Text = "Add ATR Permissions"
+    $global:AddAtrPermissionsButton.Enabled = $false
+    $global:AddAtrPermissionsButton.ForeColor = [System.Drawing.Color]::DarkBlue
+    $global:Form.Controls.Add($global:AddAtrPermissionsButton)
+
     # New Secret Label
     $global:NewSecretLabel.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row9Y)
     $global:NewSecretLabel.Size = New-Object System.Drawing.Size(100, $GUI_LABEL_HEIGHT)
@@ -254,26 +268,19 @@ function Setup-GUI {
     $global:Form.Controls.Add($global:NewSecretLabel)
 
     # New Secret TextBox
-    $secretTextX = $GUI_MARGIN + 110
-    $global:NewSecretTextBox.Location = New-Object System.Drawing.Point($secretTextX, $row9Y - 3)
+    $secretTextX = [int]($GUI_MARGIN + 110)
+    $global:NewSecretTextBox.Location = New-Object System.Drawing.Point($secretTextX, ($row9Y - 3))
     $global:NewSecretTextBox.Size = New-Object System.Drawing.Size(450, 25)
     $global:NewSecretTextBox.ReadOnly = $true # Make it read-only
     $global:Form.Controls.Add($global:NewSecretTextBox)
 
     # Copy Secret Button
-    $global:CopySecretButton.Location = New-Object System.Drawing.Point(580, 355)
+    $copySecretButtonX = $secretTextX + 450 + $GUI_MARGIN
+    $global:CopySecretButton.Location = New-Object System.Drawing.Point($copySecretButtonX, ($row9Y - 3))
     $global:CopySecretButton.Size = New-Object System.Drawing.Size(120, 30)
     $global:CopySecretButton.Text = "Copy Secret"
     $global:CopySecretButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:CopySecretButton)
-
-    # Delete Expired Secret Button
-    $global:DeleteSecretButton = New-Object System.Windows.Forms.Button
-    $global:DeleteSecretButton.Location = New-Object System.Drawing.Point(170, 320)
-    $global:DeleteSecretButton.Size = New-Object System.Drawing.Size(180, 30)
-    $global:DeleteSecretButton.Text = "Delete Expired Secret"
-    $global:DeleteSecretButton.Enabled = $false
-    $global:Form.Controls.Add($global:DeleteSecretButton)
 
     # Tenant Label (at bottom)
     $global:TenantLabel.Location = New-Object System.Drawing.Point(10, 540)
@@ -315,7 +322,10 @@ function Setup-GUI {
     })
     # Delete Secret Button Click
     $global:DeleteSecretButton.Add_Click({ Delete-ExpiredSecret })
-    
+
+    # Add ATR Permissions Button Click
+    $global:AddAtrPermissionsButton.Add_Click({ Add-BarracudaXdrPermissions })
+
     # Copy Secret Button Click
     $global:CopySecretButton.Add_Click({
         if ($global:NewSecretTextBox.Text -ne "") {
@@ -341,6 +351,7 @@ function Connect-Tenant {
     $global:FindSecretsButton.Enabled = $false
     $global:ExpiredSecretsListBox.Enabled = $false
     $global:GenerateSecretButton.Enabled = $false
+    $global:AddAtrPermissionsButton.Enabled = $false
     $global:SelectedAppNameLabel.Text = ""
     $global:SelectedEndDateLabel.Text = ""
     $global:NewSecretTextBox.Text = ""
@@ -348,9 +359,10 @@ function Connect-Tenant {
     $global:ExpiredSecretsListBox.Items.Clear()
     $global:ExpiredApplicationsData = @()
 
-    # Required scopes for reading applications and adding secrets
+    # Required scopes for reading applications, adding secrets, and granting admin consent
     # Organization.Read.All is needed to get organization display name
-    $scopes = "Application.Read.All", "Application.ReadWrite.All", "Organization.Read.All"
+    # AppRoleAssignment.ReadWrite.All is needed to grant admin consent for application permissions
+    $scopes = "Application.Read.All", "Application.ReadWrite.All", "Organization.Read.All", "AppRoleAssignment.ReadWrite.All"
 
     try {
         Write-StatusMessage "Connecting to Microsoft Graph..." -Type Info
@@ -396,6 +408,7 @@ function Disconnect-Tenant {
     $global:FindSecretsButton.Enabled = $false
     $global:ExpiredSecretsListBox.Enabled = $false
     $global:GenerateSecretButton.Enabled = $false
+    $global:AddAtrPermissionsButton.Enabled = $false
     $global:SelectedAppNameLabel.Text = ""
     $global:SelectedEndDateLabel.Text = ""
     $global:NewSecretTextBox.Text = ""
@@ -430,6 +443,7 @@ function Find-ExpiredSecrets {
     $global:FindSecretsButton.Enabled = $false
     $global:ExpiredSecretsListBox.Enabled = $false
     $global:GenerateSecretButton.Enabled = $false
+    $global:AddAtrPermissionsButton.Enabled = $false
     $global:SelectedAppNameLabel.Text = ""
     $global:SelectedEndDateLabel.Text = ""
     $global:NewSecretTextBox.Text = ""
@@ -501,6 +515,7 @@ function Update-SelectedSecretInfo {
     $global:NewSecretTextBox.Text = ""
     $global:CopySecretButton.Enabled = $false
     $global:DeleteSecretButton.Enabled = $false
+    $global:AddAtrPermissionsButton.Enabled = $false
 
     if ($selectedIndex -ge 0 -and $selectedIndex -lt $global:ExpiredApplicationsData.Count) {
         $selectedApp = $global:ExpiredApplicationsData[$selectedIndex]
@@ -508,6 +523,7 @@ function Update-SelectedSecretInfo {
         $global:SelectedEndDateLabel.Text = "Oldest Expired Date: $($selectedApp.EndDate.ToShortDateString())"
         $global:GenerateSecretButton.Enabled = $true
         $global:DeleteSecretButton.Enabled = $true
+        $global:AddAtrPermissionsButton.Enabled = $true
         Write-Host "Selected application: $($selectedApp.DisplayName)"
     } else {
         $global:DeleteSecretButton.Enabled = $false
@@ -697,6 +713,184 @@ function Delete-ExpiredSecret {
     }
 }
 
+function Add-BarracudaXdrPermissions {
+    Write-StatusMessage "Adding Barracuda XDR ATR permissions..." -Type Info
+
+    if (-not (Get-MgContext -ErrorAction SilentlyContinue)) {
+        [System.Windows.Forms.MessageBox]::Show("Not connected to Microsoft Graph. Please connect first.", "Not Connected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        Write-StatusMessage "Add permissions failed: Not connected to Graph" -Type Warning
+        return
+    }
+
+    $selectedIndex = $global:ExpiredSecretsListBox.SelectedIndex
+    if ($selectedIndex -lt 0 -or $selectedIndex -ge $global:ExpiredApplicationsData.Count) {
+        [System.Windows.Forms.MessageBox]::Show("Please select an application first.", "No Application Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+
+    $selectedApp = $global:ExpiredApplicationsData[$selectedIndex]
+    $appId = $selectedApp.ApplicationId
+    $appName = $selectedApp.DisplayName
+
+    # Barracuda XDR ATR permissions (Application permissions for automatic remediation)
+    # See: https://campus.barracuda.com/product/xdr/doc/319684663/setting-up-atr-for-microsoft-365-cloud/
+    $barracudaPermissions = @(
+        @{ Id = "741f803b-c850-494e-b5df-cde7c675a1ca"; Type = "Role"; Name = "User.ReadWrite.All" }
+        @{ Id = "3011c876-62b7-4ada-afa2-506cbbecc68c"; Type = "Role"; Name = "User.EnableDisableAccount.All" }
+    )
+    if ($addRevokeSessionsPermission) {
+        $barracudaPermissions += @{ Id = "77f3a031-c388-4f99-b373-dc68676a979e"; Type = "Role"; Name = "User.RevokeSessions.All" }
+    }
+
+    $confirmMsg = "Add the following API permissions to '$appName' for Barracuda XDR automatic remediation?`n`n" +
+        (($barracudaPermissions | ForEach-Object { "  - $($_.Name)" }) -join "`n") +
+        "`n`nAdmin consent will be granted automatically via PowerShell."
+    $confirm = [System.Windows.Forms.MessageBox]::Show($confirmMsg, "Add ATR Permissions", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+    if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) {
+        return
+    }
+
+    try {
+        $global:StatusLabel.Text = "Status: Adding ATR permissions to '$appName'..."
+        $global:AddAtrPermissionsButton.Enabled = $false
+
+        $app = Get-MgApplication -ApplicationId $appId -Property Id, AppId, RequiredResourceAccess -ErrorAction Stop
+        $appClientId = $app.AppId  # Client ID for service principal lookup (appId != Object Id)
+        $msGraphAppId = "00000003-0000-0000-c000-000000000000"  # Microsoft Graph
+
+        # Build merged requiredResourceAccess: preserve all existing, add/merge Microsoft Graph permissions
+        $existingRra = @()
+        if ($app.RequiredResourceAccess) {
+            $existingRra = @($app.RequiredResourceAccess)
+        }
+
+        $msGraphEntry = $existingRra | Where-Object { $_.ResourceAppId -eq $msGraphAppId } | Select-Object -First 1
+        $existingResourceAccess = @()
+        if ($msGraphEntry -and $msGraphEntry.ResourceAccess) {
+            $existingResourceAccess = @($msGraphEntry.ResourceAccess)
+        }
+
+        $barracudaIds = $barracudaPermissions | ForEach-Object { $_.Id }
+        $existingIds = $existingResourceAccess | ForEach-Object { $_.Id }
+        $toAdd = $barracudaPermissions | Where-Object { $existingIds -notcontains $_.Id }
+        # Permissions that exist but as delegated (Scope) - must be application (Role) for Barracuda ATR
+        $toFix = $existingResourceAccess | Where-Object { $barracudaIds -contains $_.Id -and $_.Type -eq "Scope" }
+
+        # Add missing permissions or fix delegated->application (only if needed)
+        if ($toAdd.Count -gt 0 -or $toFix.Count -gt 0) {
+            $newResourceAccess = [System.Collections.Generic.List[object]]::new()
+            foreach ($ra in $existingResourceAccess) {
+                $permType = $ra.Type
+                if ($barracudaIds -contains $ra.Id) { $permType = "Role" }  # Ensure application permission
+                $newResourceAccess.Add(@{ Id = $ra.Id; Type = $permType })
+            }
+            foreach ($p in $toAdd) {
+                $newResourceAccess.Add(@{ Id = $p.Id; Type = "Role" })  # Application permission
+            }
+
+            $newMsGraphRra = @{
+                ResourceAppId  = $msGraphAppId
+                ResourceAccess = $newResourceAccess
+            }
+
+            $otherRra = $existingRra | Where-Object { $_.ResourceAppId -ne $msGraphAppId }
+            $mergedRra = [System.Collections.Generic.List[object]]::new()
+            foreach ($rra in $otherRra) {
+                $mergedRra.Add($rra)
+            }
+            $mergedRra.Add($newMsGraphRra)
+
+            Update-MgApplication -ApplicationId $appId -RequiredResourceAccess $mergedRra -ErrorAction Stop
+        }
+
+        # Grant admin consent via app role assignments - check ALL Barracuda permissions,
+        # not just newly added ones (permissions may have been added before but never consented)
+        # Use appClientId (Application Client ID) for SP lookup - NOT appId (Object ID)
+        $clientSp = Get-MgServicePrincipal -Filter "appId eq '$appClientId'" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $clientSp) {
+            # Try direct API lookup (appId is alternate key) - filter can miss SPs in some tenants
+            try {
+                $clientSp = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals(appId='$appClientId')" -ErrorAction Stop
+            } catch { }
+        }
+        if (-not $clientSp) {
+            Write-StatusMessage "Service principal not found for app. Creating it..." -Type Info
+            try {
+                $clientSp = New-MgServicePrincipal -AppId $appClientId -ErrorAction Stop
+                Write-StatusMessage "Service principal created for '$appName'" -Type Success
+            } catch {
+                if ($_.Exception.Message -like "*already exists*") {
+                    $clientSp = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals(appId='$appClientId')" -ErrorAction SilentlyContinue
+                }
+                if (-not $clientSp) {
+                    Write-StatusMessage "Could not create or find service principal: $($_.Exception.Message)" -Type Warning
+                }
+            }
+        }
+        $msGraphSp = Get-MgServicePrincipal -Filter "appId eq '00000003-0000-0000-c000-000000000000'" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $msGraphSp) {
+            $msGraphSp = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/servicePrincipals(appId='00000003-0000-0000-c000-000000000000')" -ErrorAction SilentlyContinue
+        }
+        $consentGranted = @()
+        $consentFailed = @()
+        # Normalize Id (Invoke-MgGraphRequest returns hashtable with "id", cmdlets return .Id)
+        $clientSpId = if ($clientSp) { if ($clientSp.Id) { $clientSp.Id } elseif ($clientSp["id"]) { $clientSp["id"] } else { $clientSp.id } } else { $null }
+        $msGraphSpId = if ($msGraphSp) { if ($msGraphSp.Id) { $msGraphSp.Id } elseif ($msGraphSp["id"]) { $msGraphSp["id"] } else { $msGraphSp.id } } else { $null }
+        if ($clientSpId -and $msGraphSpId) {
+            foreach ($p in $barracudaPermissions) {
+                try {
+                    $existing = Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $clientSpId -ErrorAction SilentlyContinue |
+                        Where-Object { $_.AppRoleId -eq $p.Id -and $_.ResourceId -eq $msGraphSpId }
+                    if (-not $existing) {
+                        New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $clientSpId -PrincipalId $clientSpId -ResourceId $msGraphSpId -AppRoleId $p.Id -ErrorAction Stop
+                        $consentGranted += $p.Name
+                    }
+                } catch {
+                    $consentFailed += "$($p.Name): $($_.Exception.Message)"
+                }
+            }
+        }
+
+        $tenantName = "your tenant"
+        try {
+            $org = Get-MgOrganization -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($org -and $org.DisplayName) { $tenantName = $org.DisplayName }
+        } catch { }
+
+        $msg = ""
+        if ($toAdd.Count -gt 0) {
+            $msg = "Successfully added permissions:`n" + (($toAdd | ForEach-Object { $_.Name }) -join "`n")
+        }
+        if ($consentGranted.Count -gt 0) {
+            if ($msg) { $msg += "`n`n" }
+            $msg += "Admin consent granted for:`n" + ($consentGranted -join "`n")
+        }
+        if ($consentGranted.Count -eq 0 -and $toAdd.Count -eq 0 -and $consentFailed.Count -eq 0 -and $clientSpId -and $msGraphSpId) {
+            $msg = "All Barracuda XDR ATR permissions are already configured and consented for this application."
+        }
+        if ($consentFailed.Count -gt 0) {
+            if ($msg) { $msg += "`n`n" }
+            $msg += "Admin consent failed. Grant manually in portal: App registrations > $appName > API permissions > Grant admin consent for $tenantName.`n" + ($consentFailed -join "`n")
+        } elseif (-not $clientSpId -or -not $msGraphSpId) {
+            if ($msg) { $msg += "`n`n" }
+            $msg += "Could not grant admin consent (service principal not found). Grant manually in portal: App registrations > $appName > API permissions > Grant admin consent for $tenantName."
+        }
+        if (-not $msg) { $msg = "No changes needed." }
+        [System.Windows.Forms.MessageBox]::Show($msg, "Permissions Added", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        $statusSuffix = if ($consentGranted.Count -gt 0) { " Admin consent granted." } elseif ($toAdd.Count -gt 0) { " Grant admin consent in portal if needed." } else { "" }
+        $global:StatusLabel.Text = "Status: ATR permissions for '$appName'." + $statusSuffix
+        Write-StatusMessage "ATR permissions for '$appName'. Admin consent: $(if ($consentGranted.Count -gt 0) { 'granted' } else { 'grant manually in portal' })" -Type Success
+
+    } catch {
+        $errMsg = $_.Exception.Message
+        [System.Windows.Forms.MessageBox]::Show("Error adding permissions: $errMsg", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        $global:StatusLabel.Text = "Status: Error adding permissions - $errMsg"
+        Write-StatusMessage "Error adding ATR permissions: $errMsg" -Type Error
+    } finally {
+        $global:AddAtrPermissionsButton.Enabled = $true
+    }
+}
+
 function Copy-TicketNoteTemplate {
     Write-Host "Generating ticket note template..."
     # Get local time (not UTC) for the timestamp - [DateTime]::Now explicitly returns local time
@@ -851,6 +1045,7 @@ $global:NewSecretLabel.Dispose()
 $global:NewSecretTextBox.Dispose()
 $global:CopySecretButton.Dispose()
 $global:DeleteSecretButton.Dispose()
+$global:AddAtrPermissionsButton.Dispose()
 $global:CopyTicketNoteButton.Dispose()
 $global:TenantLabel.Dispose()
 Write-Host "Resources cleaned up."
