@@ -63,6 +63,7 @@ $GUI_MARGIN = 10
 $GUI_SPACING = 5
 $GUI_BUTTON_HEIGHT = 30
 $GUI_BUTTON_WIDTH = 110
+$GUI_BUTTON_WIDTH_CONNECT = 75   # Narrower for Connect/Disconnect to fit row
 $GUI_BUTTON_WIDTH_WIDE = 180
 $GUI_LABEL_HEIGHT = 20
 $GUI_FORM_WIDTH = 850
@@ -204,20 +205,24 @@ function Setup-GUI {
     # Connect Button
     $connectX = [int]($tenantComboX + 220 + 28 + $GUI_MARGIN)
     $global:ConnectButton.Location = [System.Drawing.Point]::new($connectX, $row1Y)
-    $global:ConnectButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH, [int]$GUI_BUTTON_HEIGHT)
+    $global:ConnectButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH_CONNECT, [int]$GUI_BUTTON_HEIGHT)
     $global:ConnectButton.Text = "Connect"
+    $global:ConnectButton.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)   # Green
+    $global:ConnectButton.ForeColor = [System.Drawing.Color]::White
     $global:Form.Controls.Add($global:ConnectButton)
 
     # Disconnect Button
-    $disconnectX = [int]($connectX + $GUI_BUTTON_WIDTH + $GUI_MARGIN)
+    $disconnectX = [int]($connectX + $GUI_BUTTON_WIDTH_CONNECT + $GUI_MARGIN)
     $global:DisconnectButton.Location = [System.Drawing.Point]::new($disconnectX, $row1Y)
-    $global:DisconnectButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH, [int]$GUI_BUTTON_HEIGHT)
+    $global:DisconnectButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH_CONNECT, [int]$GUI_BUTTON_HEIGHT)
     $global:DisconnectButton.Text = "Disconnect"
+    $global:DisconnectButton.BackColor = [System.Drawing.Color]::FromArgb(198, 40, 40)   # Red
+    $global:DisconnectButton.ForeColor = [System.Drawing.Color]::White
     $global:DisconnectButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:DisconnectButton)
 
     # Add App button (create XOA app registration, save to WCM)
-    $addAppX = [int]($disconnectX + $GUI_BUTTON_WIDTH + $GUI_MARGIN)
+    $addAppX = [int]($disconnectX + $GUI_BUTTON_WIDTH_CONNECT + $GUI_MARGIN)
     $global:AddAppButton = New-Object System.Windows.Forms.Button
     $global:AddAppButton.Location = [System.Drawing.Point]::new($addAppX, $row1Y)
     $global:AddAppButton.Size = [System.Drawing.Size]::new(90, [int]$GUI_BUTTON_HEIGHT)
