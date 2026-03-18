@@ -1,0 +1,210 @@
+<#
+.SYNOPSIS
+    Store and retrieve Graph app credentials (app-only) in Windows Credential Manager.
+.DESCRIPTION
+    Uses CredentialManager module. Target format: EOA-GraphApp-{tenantId}
+    UserName stores "TenantId|ClientId", Password stores ClientSecret.
+    Shared with ExchangeOnlineAnalyzer - credentials stored by either app are available to both.
+.NOTES
+    Requires: Install-Module CredentialManager
+#>
+
+$script:credTargetPrefix = 'EOA-GraphApp-'
+
+function Get-GraphAppCredentialFromWCM {
+    <#
+    .SYNOPSIS
+        Retrieves Graph app credentials from Windows Credential Manager for a tenant.
+    .OUTPUTS
+        @{ TenantId; ClientId; ClientSecret } or $null if not found
+    .NOTES
+        Tries CredentialManager first, falls back to CredRead P/Invoke (for pwsh compatibility).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TenantId
+    )
+    $target = "$script:credTargetPrefix$TenantId"
+
+    # Try CredentialManager first (works in Windows PowerShell 5.1)
+    if (Get-Module -ListAvailable -Name CredentialManager) {
+        try {
+            Import-Module CredentialManager -ErrorAction Stop
+            $cred = Get-StoredCredential -Target $target -ErrorAction SilentlyContinue
+            if ($cred) {
+                $parts = $cred.UserName -split '\|', 2
+                if ($parts.Count -ge 2) {
+                    return [pscustomobject]@{
+                        TenantId     = $parts[0]
+                        ClientId     = $parts[1]
+                        ClientSecret = $cred.GetNetworkCredential().Password
+                    }
+                }
+            }
+        } catch {
+            # CredentialManager may fail in pwsh
+        }
+    }
+
+    # Fallback: CredRead P/Invoke (works in pwsh)
+    try {
+        $credObj = _ReadCredentialViaCredRead -Target $target
+        if (-not $credObj) { return $null }
+        $parts = $credObj.UserName -split '\|', 2
+        if ($parts.Count -lt 2) { return $null }
+        return [pscustomobject]@{
+            TenantId     = $parts[0]
+            ClientId     = $parts[1]
+            ClientSecret = $credObj.CredentialBlob
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Get-WCMTenantIds {
+    <#
+    .SYNOPSIS
+        Returns tenant IDs that have Graph app credentials stored in Windows Credential Manager.
+    .OUTPUTS
+        [string[]] Tenant IDs, or @() if none found
+    #>
+    $tenantIds = @()
+    try {
+        $output = cmdkey /list 2>$null
+        if ($output) {
+            $text = $output | Out-String
+            $prefix = $script:credTargetPrefix
+            $pattern = [regex]::Escape($prefix) + '([a-fA-F0-9\-]{36})'
+            $m = [regex]::Matches($text, $pattern)
+            foreach ($match in $m) {
+                if ($match.Success -and $match.Groups[1].Value) {
+                    $tid = $match.Groups[1].Value
+                    if ($tid -notin $tenantIds) { $tenantIds += $tid }
+                }
+            }
+        }
+    } catch {}
+    return $tenantIds
+}
+
+function _Get-StoredDisplayName {
+    param([string]$TenantId)
+    $target = "${script:credTargetPrefix}${TenantId}-DisplayName"
+    try {
+        if (Get-Module -ListAvailable -Name CredentialManager) {
+            Import-Module CredentialManager -ErrorAction Stop
+            $c = Get-StoredCredential -Target $target -ErrorAction SilentlyContinue
+            if ($c) { return $c.GetNetworkCredential().Password }
+        }
+        $obj = _ReadCredentialViaCredRead -Target $target
+        if ($obj -and $obj.CredentialBlob) { return $obj.CredentialBlob }
+    } catch {}
+    return $null
+}
+
+function Get-TenantDisplayNameFromWCM {
+    param([Parameter(Mandatory = $true)][string]$TenantId)
+    $token = Get-GraphAppTokenFromWCM -TenantId $TenantId
+    if (-not $token) { return $null }
+    try {
+        $headers = @{ Authorization = "Bearer $token" }
+        $resp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/organization" -Headers $headers -Method Get -ErrorAction Stop
+        if ($resp.value -and $resp.value.Count -gt 0 -and $resp.value[0].displayName) {
+            return $resp.value[0].displayName
+        }
+    } catch {}
+    return $null
+}
+
+function Get-WCMTenantListWithNames {
+    <#
+    .SYNOPSIS
+        Returns WCM tenants with display names for dropdown display, sorted alphabetically by DisplayText.
+    .OUTPUTS
+        @(@{ TenantId; DisplayName; DisplayText }, ...)
+    #>
+    $result = @()
+    $ids = Get-WCMTenantIds
+    foreach ($tid in $ids) {
+        $name = _Get-StoredDisplayName -TenantId $tid
+        if (-not $name) { $name = Get-TenantDisplayNameFromWCM -TenantId $tid }
+        $displayText = if ($name) { "$name ($tid)" } else { $tid }
+        $result += [pscustomobject]@{ TenantId = $tid; DisplayName = $name; DisplayText = $displayText }
+    }
+    return $result | Sort-Object -Property DisplayText
+}
+
+function Get-GraphAppTokenFromWCM {
+    <#
+    .SYNOPSIS
+        Gets an app-only access token using credentials from WCM. Returns $null if not found
+    #>
+    param([Parameter(Mandatory = $true)][string]$TenantId)
+    $cred = Get-GraphAppCredentialFromWCM -TenantId $TenantId
+    if (-not $cred) { return $null }
+    $tokenUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+    $body = @{
+        client_id     = $cred.ClientId
+        client_secret = $cred.ClientSecret
+        scope         = 'https://graph.microsoft.com/.default'
+        grant_type    = 'client_credentials'
+    }
+    try {
+        $resp = Invoke-RestMethod -Uri $tokenUrl -Method POST -Body $body -ContentType 'application/x-www-form-urlencoded' -ErrorAction Stop
+        return $resp.access_token
+    } catch {
+        return $null
+    }
+}
+
+function _ReadCredentialViaCredRead {
+    param([string]$Target)
+    if (-not $Target) { return $null }
+    $sig = @'
+[DllImport("Advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern bool CredRead(string target, uint type, int reservedFlag, out IntPtr credentialPtr);
+
+[DllImport("Advapi32.dll", EntryPoint = "CredFree", SetLastError = true)]
+public static extern bool CredFree(IntPtr cred);
+
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct NativeCredential {
+    public uint Flags;
+    public uint Type;
+    public IntPtr TargetName;
+    public IntPtr Comment;
+    public long LastWritten;
+    public uint CredentialBlobSize;
+    public IntPtr CredentialBlob;
+    public uint Persist;
+    public uint AttributeCount;
+    public IntPtr Attributes;
+    public IntPtr TargetAlias;
+    public IntPtr UserName;
+}
+'@
+    try {
+        Add-Type -MemberDefinition $sig -Namespace 'EOACredRead' -Name 'Util' -ErrorAction Stop
+    } catch {
+        if ($_.Exception.Message -notmatch 'already exists') { return $null }
+    }
+    $ptr = [IntPtr]::Zero
+    $ok = [EOACredRead.Util]::CredRead($Target, 1, 0, [ref]$ptr)
+    if (-not $ok -or $ptr -eq [IntPtr]::Zero) { return $null }
+    try {
+        $ncred = [System.Runtime.InteropServices.Marshal]::PtrToStructure($ptr, [EOACredRead.Util+NativeCredential])
+        $userName = if ($ncred.UserName -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ncred.UserName) } else { $null }
+        $blob = $null
+        if ($ncred.CredentialBlob -ne [IntPtr]::Zero -and $ncred.CredentialBlobSize -gt 0) {
+            $blob = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ncred.CredentialBlob, [int]$ncred.CredentialBlobSize / 2)
+        }
+        [EOACredRead.Util]::CredFree($ptr) | Out-Null
+        return [pscustomobject]@{ UserName = $userName; CredentialBlob = $blob }
+    } catch {
+        try { [EOACredRead.Util]::CredFree($ptr) | Out-Null } catch {}
+        return $null
+    }
+}
+
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames

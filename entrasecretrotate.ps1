@@ -7,6 +7,13 @@ Write-Host "Script started."
 # Import specific sub-modules instead of meta-module to avoid dependency issues
 $requiredModules = @("Microsoft.Graph.Authentication", "Microsoft.Graph.Applications")
 
+# Graph app sessions from Windows Credential Manager (EOA-GraphApp-{tenantId} format, shared with ExchangeOnlineAnalyzer)
+$graphAppCredentialModulePath = Join-Path $PSScriptRoot "Modules\GraphAppCredential.psm1"
+
+# ExchangeOnlineAnalyzer path for Add/Delete app registration scripts (per XOA)
+# Default: sibling directory (e.g. c:\git\exchangeonlineanalyzer when entrasecretrotate is in c:\git\entrasecretrotate)
+$xoaPath = Join-Path (Split-Path $PSScriptRoot -Parent) "exchangeonlineanalyzer"
+
 # Secret naming configuration
 # Customize the display name for new secrets. {YEAR} will be replaced with current year.
 $secretDisplayNameTemplate = "skout{YEAR}"
@@ -168,23 +175,67 @@ function Setup-GUI {
     $row8Y = [int]($row7Y + $GUI_LABEL_HEIGHT + $GUI_MARGIN)
     $row9Y = [int]($row8Y + $GUI_BUTTON_HEIGHT + $GUI_MARGIN)
 
+    # Tenant selector (Graph app sessions from WCM, shared with ExchangeOnlineAnalyzer)
+    $tenantLabel = New-Object System.Windows.Forms.Label
+    $tenantLabel.Text = "Tenant:"
+    $tenantLabel.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row1Y + 6)
+    $tenantLabel.Size = New-Object System.Drawing.Size(45, $GUI_LABEL_HEIGHT)
+    $global:Form.Controls.Add($tenantLabel)
+
+    $tenantComboX = $GUI_MARGIN + 50
+    $global:TenantComboBox = New-Object System.Windows.Forms.ComboBox
+    $global:TenantComboBox.Location = New-Object System.Drawing.Point($tenantComboX, $row1Y)
+    $global:TenantComboBox.Size = New-Object System.Drawing.Size(220, 25)
+    $global:TenantComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+    $global:TenantComboBox.TabIndex = 0
+    Update-TenantComboBox
+    $global:Form.Controls.Add($global:TenantComboBox)
+
+    # Refresh tenants button (reload WCM app sessions after adding via ExchangeOnlineAnalyzer)
+    $refreshTenantsBtn = New-Object System.Windows.Forms.Button
+    $refreshTenantsBtn.Text = "↻"
+    $refreshTenantsBtn.Location = New-Object System.Drawing.Point($tenantComboX + 222, $row1Y)
+    $refreshTenantsBtn.Size = New-Object System.Drawing.Size(28, $GUI_BUTTON_HEIGHT)
+    $refreshTenantsBtn.Add_Click({ Update-TenantComboBox })
+    $global:Form.Controls.Add($refreshTenantsBtn)
+
     # Connect Button
-    $global:ConnectButton.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row1Y)
+    $connectX = $tenantComboX + 220 + 28 + $GUI_MARGIN
+    $global:ConnectButton.Location = New-Object System.Drawing.Point($connectX, $row1Y)
     $global:ConnectButton.Size = New-Object System.Drawing.Size($GUI_BUTTON_WIDTH, $GUI_BUTTON_HEIGHT)
     $global:ConnectButton.Text = "Connect"
     $global:Form.Controls.Add($global:ConnectButton)
 
     # Disconnect Button
-    $disconnectX = $GUI_MARGIN + $GUI_BUTTON_WIDTH + $GUI_MARGIN
+    $disconnectX = $connectX + $GUI_BUTTON_WIDTH + $GUI_MARGIN
     $global:DisconnectButton.Location = New-Object System.Drawing.Point($disconnectX, $row1Y)
     $global:DisconnectButton.Size = New-Object System.Drawing.Size($GUI_BUTTON_WIDTH, $GUI_BUTTON_HEIGHT)
     $global:DisconnectButton.Text = "Disconnect"
     $global:DisconnectButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:DisconnectButton)
 
+    # Add App button (create XOA app registration, save to WCM)
+    $addAppX = $disconnectX + $GUI_BUTTON_WIDTH + $GUI_MARGIN
+    $global:AddAppButton = New-Object System.Windows.Forms.Button
+    $global:AddAppButton.Location = New-Object System.Drawing.Point($addAppX, $row1Y)
+    $global:AddAppButton.Size = New-Object System.Drawing.Size(90, $GUI_BUTTON_HEIGHT)
+    $global:AddAppButton.Text = "Add App"
+    $global:Form.Controls.Add($global:AddAppButton)
+
+    # Delete App button (remove XOA app registration per tenant)
+    $deleteAppX = $addAppX + 90 + $GUI_SPACING
+    $global:DeleteAppButton = New-Object System.Windows.Forms.Button
+    $global:DeleteAppButton.Location = New-Object System.Drawing.Point($deleteAppX, $row1Y)
+    $global:DeleteAppButton.Size = New-Object System.Drawing.Size(90, $GUI_BUTTON_HEIGHT)
+    $global:DeleteAppButton.Text = "Delete App"
+    $global:DeleteAppButton.BackColor = [System.Drawing.Color]::FromArgb(198, 40, 40)
+    $global:DeleteAppButton.ForeColor = [System.Drawing.Color]::White
+    $global:Form.Controls.Add($global:DeleteAppButton)
+
     # Copy Ticket Note Button
-    $global:CopyTicketNoteButton.Location = New-Object System.Drawing.Point(250, 10)
-    $global:CopyTicketNoteButton.Size = New-Object System.Drawing.Size(150, 30)
+    $copyTicketX = $deleteAppX + 90 + $GUI_MARGIN
+    $global:CopyTicketNoteButton.Location = New-Object System.Drawing.Point($copyTicketX, $row1Y)
+    $global:CopyTicketNoteButton.Size = New-Object System.Drawing.Size(150, $GUI_BUTTON_HEIGHT)
     $global:CopyTicketNoteButton.Text = "Copy Ticket Note"
     $global:CopyTicketNoteButton.Enabled = $true # Always enabled
     $global:Form.Controls.Add($global:CopyTicketNoteButton)
@@ -202,6 +253,15 @@ function Setup-GUI {
     $global:FindSecretsButton.Text = "Find Expired Secrets"
     $global:FindSecretsButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:FindSecretsButton)
+
+    # Select Application button (add secret without finding expired first)
+    $selectAppX = $GUI_MARGIN + $GUI_BUTTON_WIDTH_WIDE + $GUI_MARGIN
+    $global:SelectAppButton = New-Object System.Windows.Forms.Button
+    $global:SelectAppButton.Location = New-Object System.Drawing.Point($selectAppX, $row3Y)
+    $global:SelectAppButton.Size = New-Object System.Drawing.Size(140, $GUI_BUTTON_HEIGHT)
+    $global:SelectAppButton.Text = "Select Application"
+    $global:SelectAppButton.Enabled = $false # Disabled initially
+    $global:Form.Controls.Add($global:SelectAppButton)
 
     # Expired Secrets Label
     $global:ExpiredSecretsLabel.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row4Y)
@@ -311,6 +371,11 @@ function Setup-GUI {
         Find-ExpiredSecrets
     })
 
+    # Select Application Button Click
+    $global:SelectAppButton.Add_Click({
+        Show-SelectApplicationDialog
+    })
+
     # ListBox Selection Change
     $global:ExpiredSecretsListBox.Add_SelectedValueChanged({
         Update-SelectedSecretInfo
@@ -326,6 +391,10 @@ function Setup-GUI {
     # Add ATR Permissions Button Click
     $global:AddAtrPermissionsButton.Add_Click({ Add-BarracudaXdrPermissions })
 
+    # Add App / Delete App button clicks
+    $global:AddAppButton.Add_Click({ Add-XOAAppRegistration })
+    $global:DeleteAppButton.Add_Click({ Delete-XOAAppRegistration })
+
     # Copy Secret Button Click
     $global:CopySecretButton.Add_Click({
         if ($global:NewSecretTextBox.Text -ne "") {
@@ -335,13 +404,146 @@ function Setup-GUI {
             [System.Windows.Forms.MessageBox]::Show("No secret to copy. Please generate a secret first.", "No Secret", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         }
     })
-    
     Write-Host "GUI setup complete."
 }
 
 
 # --- Logic Functions ---
-# (Connect-Tenant, Disconnect-Tenant, Find-ExpiredSecrets, Update-SelectedSecretInfo functions remain the same)
+
+function Update-TenantComboBox {
+    <#
+    .SYNOPSIS
+        Populates the tenant dropdown with Graph app sessions from Windows Credential Manager (EOA-GraphApp-* format).
+    #>
+    if (-not $global:TenantComboBox) { return }
+    $global:TenantComboBox.Items.Clear()
+    $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = "Interactive (browser)"; TenantId = $null }) | Out-Null
+    try {
+        if (Test-Path $graphAppCredentialModulePath) {
+            Import-Module $graphAppCredentialModulePath -Force -ErrorAction SilentlyContinue
+            if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
+                $tenantList = Get-WCMTenantListWithNames
+                foreach ($t in $tenantList) {
+                    $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = $t.DisplayText; TenantId = $t.TenantId }) | Out-Null
+                }
+            }
+        }
+    } catch { /* non-fatal */ }
+    $global:TenantComboBox.DisplayMember = "DisplayText"
+    $global:TenantComboBox.ValueMember = "TenantId"
+    if ($global:TenantComboBox.Items.Count -gt 0) {
+        $global:TenantComboBox.SelectedIndex = 0
+    }
+}
+
+function Add-XOAAppRegistration {
+    <#
+    .SYNOPSIS
+        Launches ExchangeOnlineAnalyzer's New-GraphInboxRulesApp.ps1 -SaveToWCM to create app registration and save to WCM.
+    #>
+    $scriptPath = Join-Path $xoaPath "New-GraphInboxRulesApp.ps1"
+    if (-not (Test-Path $scriptPath)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "ExchangeOnlineAnalyzer script not found.`n`nExpected: $scriptPath`n`nEnsure ExchangeOnlineAnalyzer is installed at: $xoaPath",
+            "Add App",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+        return
+    }
+    try {
+        $psExe = (Get-Process -Id $PID).Path
+        Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -SaveToWCM" -Wait
+        Update-TenantComboBox
+        [System.Windows.Forms.MessageBox]::Show("Add App completed. Tenant list refreshed.", "Add App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to run Add App: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+}
+
+function Delete-XOAAppRegistration {
+    <#
+    .SYNOPSIS
+        Shows tenant selection dialog and runs Remove-GraphInboxRulesApp.ps1 for each selected tenant.
+    #>
+    $scriptPath = Join-Path $xoaPath "Remove-GraphInboxRulesApp.ps1"
+    if (-not (Test-Path $scriptPath)) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "ExchangeOnlineAnalyzer script not found.`n`nExpected: $scriptPath`n`nEnsure ExchangeOnlineAnalyzer is installed at: $xoaPath",
+            "Delete App",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+        return
+    }
+    $tenantList = @()
+    try {
+        if (Test-Path $graphAppCredentialModulePath) {
+            Import-Module $graphAppCredentialModulePath -Force -ErrorAction SilentlyContinue
+        }
+        if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
+            $tenantList = Get-WCMTenantListWithNames
+        }
+    } catch {}
+    if ($tenantList.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager. Nothing to remove.", "Delete App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+    $selForm = New-Object System.Windows.Forms.Form
+    $selForm.Text = "Select Tenant(s) to Remove App From"
+    $selForm.Size = New-Object System.Drawing.Size(450, 380)
+    $selForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $selForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "Select which tenant(s) to remove the Graph app registration from (River Run Security Investigator):"
+    $lbl.Location = New-Object System.Drawing.Point(10, 10)
+    $lbl.Size = New-Object System.Drawing.Size(410, 35)
+    $lbl.AutoSize = $true
+    $clb = New-Object System.Windows.Forms.CheckedListBox
+    $clb.Location = New-Object System.Drawing.Point(10, 50)
+    $clb.Size = New-Object System.Drawing.Size(410, 240)
+    $clb.CheckOnClick = $true
+    foreach ($t in $tenantList) { [void]$clb.Items.Add($t.DisplayText, $false) }
+    $btnOk = New-Object System.Windows.Forms.Button
+    $btnOk.Text = "Remove Selected"
+    $btnOk.Location = New-Object System.Drawing.Point(180, 300)
+    $btnOk.Size = New-Object System.Drawing.Size(120, 30)
+    $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Text = "Cancel"
+    $btnCancel.Location = New-Object System.Drawing.Point(310, 300)
+    $btnCancel.Size = New-Object System.Drawing.Size(90, 30)
+    $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $selForm.AcceptButton = $btnOk
+    $selForm.CancelButton = $btnCancel
+    $selForm.Controls.AddRange(@($lbl, $clb, $btnOk, $btnCancel))
+    if ($selForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+    $selected = @()
+    for ($i = 0; $i -lt $clb.Items.Count; $i++) {
+        if ($clb.GetItemChecked($i)) { $selected += $tenantList[$i].TenantId }
+    }
+    if ($selected.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("No tenants selected.", "Delete App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+    $confirm = [System.Windows.Forms.MessageBox]::Show(
+        "Remove app registration for $($selected.Count) tenant(s)? This will delete the app, service principal, and stored credentials.",
+        "Confirm Delete",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return }
+    try {
+        $psExe = (Get-Process -Id $PID).Path
+        foreach ($tid in $selected) {
+            Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -TenantId `"$tid`" -Force" -Wait
+        }
+        Update-TenantComboBox
+        [System.Windows.Forms.MessageBox]::Show("App removal completed for $($selected.Count) tenant(s). Tenant list refreshed.", "Delete App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed to run Delete App: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+}
 
 function Connect-Tenant {
     Write-Host "Attempting to connect..."
@@ -358,15 +560,39 @@ function Connect-Tenant {
     $global:CopySecretButton.Enabled = $false
     $global:ExpiredSecretsListBox.Items.Clear()
     $global:ExpiredApplicationsData = @()
+    $global:SelectedApplicationForSecret = $null
 
     # Required scopes for reading applications, adding secrets, and granting admin consent
     # Organization.Read.All is needed to get organization display name
     # AppRoleAssignment.ReadWrite.All is needed to grant admin consent for application permissions
     $scopes = "Application.Read.All", "Application.ReadWrite.All", "Organization.Read.All", "AppRoleAssignment.ReadWrite.All"
 
+    $selectedTenantId = $null
+    if ($global:TenantComboBox -and $global:TenantComboBox.SelectedItem) {
+        $sel = $global:TenantComboBox.SelectedItem
+        if ($sel.TenantId) { $selectedTenantId = $sel.TenantId }
+    }
+
     try {
-        Write-StatusMessage "Connecting to Microsoft Graph..." -Type Info
-        Connect-MgGraph -Scopes $scopes -ErrorAction Stop
+        if ($selectedTenantId) {
+            # Use Graph app credentials from Windows Credential Manager (EOA-GraphApp-* format)
+            Write-StatusMessage "Connecting via app credentials for tenant $selectedTenantId..." -Type Info
+            if (Test-Path $graphAppCredentialModulePath) {
+                Import-Module $graphAppCredentialModulePath -Force -ErrorAction SilentlyContinue
+            }
+            $token = $null
+            if (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue) {
+                $token = Get-GraphAppTokenFromWCM -TenantId $selectedTenantId
+            }
+            if (-not $token) {
+                throw "No app credentials found for tenant $selectedTenantId in Windows Credential Manager. Add credentials via ExchangeOnlineAnalyzer or use Interactive (browser)."
+            }
+            $secToken = ConvertTo-SecureString $token -AsPlainText -Force
+            Connect-MgGraph -AccessToken $secToken -NoWelcome -ErrorAction Stop
+        } else {
+            Write-StatusMessage "Connecting to Microsoft Graph (interactive)..." -Type Info
+            Connect-MgGraph -Scopes $scopes -ErrorAction Stop
+        }
         $context = Get-MgContext
         $tenantId = $context.TenantId
         
@@ -388,7 +614,9 @@ function Connect-Tenant {
         $global:StatusLabel.Text = "Status: Connected to Tenant ID '$tenantId'"
         $global:DisconnectButton.Enabled = $true
         $global:FindSecretsButton.Enabled = $true
+        $global:SelectAppButton.Enabled = $true
         $global:ExpiredSecretsListBox.Enabled = $true
+        if ($global:TenantComboBox) { $global:TenantComboBox.Enabled = $false }
         # Note: GenerateSecretButton is enabled only when an application is selected
         Write-StatusMessage "Successfully connected to tenant: $tenantId" -Type Success
 
@@ -396,6 +624,7 @@ function Connect-Tenant {
         $errorMsg = $_.Exception.Message
         $global:StatusLabel.Text = "Status: Connection failed - $errorMsg"
         $global:ConnectButton.Enabled = $true
+        if ($global:TenantComboBox) { $global:TenantComboBox.Enabled = $true }
         Write-StatusMessage "Connection failed: $errorMsg" -Type Error
     }
 }
@@ -406,6 +635,7 @@ function Disconnect-Tenant {
     $global:ConnectButton.Enabled = $false
     $global:DisconnectButton.Enabled = $false
     $global:FindSecretsButton.Enabled = $false
+    $global:SelectAppButton.Enabled = $false
     $global:ExpiredSecretsListBox.Enabled = $false
     $global:GenerateSecretButton.Enabled = $false
     $global:AddAtrPermissionsButton.Enabled = $false
@@ -415,6 +645,7 @@ function Disconnect-Tenant {
     $global:CopySecretButton.Enabled = $false
     $global:ExpiredSecretsListBox.Items.Clear()
     $global:ExpiredApplicationsData = @()
+    $global:SelectedApplicationForSecret = $null
 
     try {
         Disconnect-MgGraph -ErrorAction Stop
@@ -422,11 +653,13 @@ function Disconnect-Tenant {
         $global:TenantLabel.Text = "Tenant: Not Connected"
         $global:TenantLabel.ForeColor = [System.Drawing.Color]::Gray
         $global:ConnectButton.Enabled = $true
+        if ($global:TenantComboBox) { $global:TenantComboBox.Enabled = $true }
         Write-StatusMessage "Successfully disconnected from Microsoft Graph" -Type Success
     } catch {
         $errorMsg = $_.Exception.Message
         $global:StatusLabel.Text = "Status: Disconnection failed - $errorMsg"
         $global:DisconnectButton.Enabled = $true # Allow retry if disconnect itself fails
+        if ($global:TenantComboBox) { $global:TenantComboBox.Enabled = $true }
         Write-StatusMessage "Disconnection failed: $errorMsg" -Type Error
     }
 }
@@ -450,6 +683,7 @@ function Find-ExpiredSecrets {
     $global:CopySecretButton.Enabled = $false
     $global:ExpiredSecretsListBox.Items.Clear()
     $global:ExpiredApplicationsData = @()
+    $global:SelectedApplicationForSecret = $null
 
     $now = Get-Date
 
@@ -516,6 +750,7 @@ function Update-SelectedSecretInfo {
     $global:CopySecretButton.Enabled = $false
     $global:DeleteSecretButton.Enabled = $false
     $global:AddAtrPermissionsButton.Enabled = $false
+    $global:SelectedApplicationForSecret = $null
 
     if ($selectedIndex -ge 0 -and $selectedIndex -lt $global:ExpiredApplicationsData.Count) {
         $selectedApp = $global:ExpiredApplicationsData[$selectedIndex]
@@ -524,11 +759,104 @@ function Update-SelectedSecretInfo {
         $global:GenerateSecretButton.Enabled = $true
         $global:DeleteSecretButton.Enabled = $true
         $global:AddAtrPermissionsButton.Enabled = $true
+        $global:SelectedApplicationForSecret = [pscustomobject]@{ ApplicationId = $selectedApp.ApplicationId; DisplayName = $selectedApp.DisplayName; EndDate = $selectedApp.EndDate }
         Write-Host "Selected application: $($selectedApp.DisplayName)"
     } else {
         $global:DeleteSecretButton.Enabled = $false
         Write-Host "No valid application selected."
     }
+}
+
+function Show-SelectApplicationDialog {
+    <#
+    .SYNOPSIS
+        Browse and select any application to add a new secret, without finding expired secrets first.
+    #>
+    if (-not (Get-MgContext -ErrorAction SilentlyContinue)) {
+        $global:StatusLabel.Text = "Status: Not connected. Please connect first."
+        [System.Windows.Forms.MessageBox]::Show("Please connect to a tenant first.", "Select Application", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    $global:StatusLabel.Text = "Status: Loading applications..."
+    [System.Windows.Forms.Application]::DoEvents()
+    try {
+        $applications = Get-MgApplication -All -Property DisplayName, Id, AppId -ErrorAction Stop
+    } catch {
+        $global:StatusLabel.Text = "Status: Error loading applications"
+        [System.Windows.Forms.MessageBox]::Show("Failed to load applications: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        return
+    }
+    $global:StatusLabel.Text = "Status: Connected"
+    $appList = $applications | Sort-Object DisplayName | ForEach-Object { [pscustomobject]@{ DisplayName = $_.DisplayName; Id = $_.Id; AppId = $_.AppId } }
+    if ($appList.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("No applications found in this tenant.", "Select Application", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return
+    }
+    $selForm = New-Object System.Windows.Forms.Form
+    $selForm.Text = "Select Application (Add Secret)"
+    $selForm.Size = New-Object System.Drawing.Size(500, 450)
+    $selForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $selForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "Select an application to add a new secret:"
+    $lbl.Location = New-Object System.Drawing.Point(10, 10)
+    $lbl.Size = New-Object System.Drawing.Size(460, 20)
+    $selForm.Controls.Add($lbl)
+    $searchLbl = New-Object System.Windows.Forms.Label
+    $searchLbl.Text = "Search:"
+    $searchLbl.Location = New-Object System.Drawing.Point(10, 35)
+    $searchLbl.Size = New-Object System.Drawing.Size(45, 20)
+    $selForm.Controls.Add($searchLbl)
+    $searchBox = New-Object System.Windows.Forms.TextBox
+    $searchBox.Location = New-Object System.Drawing.Point(60, 33)
+    $searchBox.Size = New-Object System.Drawing.Size(410, 20)
+    $selForm.Controls.Add($searchBox)
+    $listBox = New-Object System.Windows.Forms.ListBox
+    $listBox.Location = New-Object System.Drawing.Point(10, 60)
+    $listBox.Size = New-Object System.Drawing.Size(460, 300)
+    $listBox.DisplayMember = "DisplayName"
+    foreach ($a in $appList) { [void]$listBox.Items.Add($a) }
+    $selForm.Controls.Add($listBox)
+    $filterScript = {
+        $txt = $searchBox.Text.Trim().ToLower()
+        $listBox.Items.Clear()
+        if ([string]::IsNullOrEmpty($txt)) {
+            foreach ($a in $script:allApps) { [void]$listBox.Items.Add($a) }
+        } else {
+            foreach ($a in $script:allApps) {
+                if ($a.DisplayName -and $a.DisplayName.ToLower().Contains($txt)) { [void]$listBox.Items.Add($a) }
+            }
+        }
+    }
+    $script:allApps = $appList
+    $searchBox.Add_TextChanged($filterScript)
+    $btnOk = New-Object System.Windows.Forms.Button
+    $btnOk.Text = "Select"
+    $btnOk.Location = New-Object System.Drawing.Point(200, 370)
+    $btnOk.Size = New-Object System.Drawing.Size(90, 28)
+    $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Text = "Cancel"
+    $btnCancel.Location = New-Object System.Drawing.Point(300, 370)
+    $btnCancel.Size = New-Object System.Drawing.Size(90, 28)
+    $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $selForm.AcceptButton = $btnOk
+    $selForm.CancelButton = $btnCancel
+    $selForm.Controls.AddRange(@($btnOk, $btnCancel))
+    $listBox.DoubleClick += { $selForm.DialogResult = [System.Windows.Forms.DialogResult]::OK; $selForm.Close() }
+    if ($selForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+    $selected = $listBox.SelectedItem
+    if (-not $selected) {
+        [System.Windows.Forms.MessageBox]::Show("Please select an application.", "Select Application", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    $global:SelectedApplicationForSecret = [pscustomobject]@{ ApplicationId = $selected.Id; DisplayName = $selected.DisplayName; EndDate = $null }
+    $global:SelectedAppNameLabel.Text = $selected.DisplayName
+    $global:SelectedEndDateLabel.Text = "Selected for secret rotation"
+    $global:GenerateSecretButton.Enabled = $true
+    $global:NewSecretTextBox.Text = ""
+    $global:DeleteSecretButton.Enabled = $false
+    Write-StatusMessage "Selected application: $($selected.DisplayName)" -Type Info
 }
 
 function Generate-NewSecret {
@@ -539,15 +867,19 @@ function Generate-NewSecret {
          return
     }
 
-    $selectedIndex = $global:ExpiredSecretsListBox.SelectedIndex
-
-    if ($selectedIndex -lt 0 -or $selectedIndex -ge $global:ExpiredApplicationsData.Count) {
-        $global:StatusLabel.Text = "Status: Please select an application first."
+    $selectedApp = $global:SelectedApplicationForSecret
+    if (-not $selectedApp) {
+        $selectedIndex = $global:ExpiredSecretsListBox.SelectedIndex
+        if ($selectedIndex -ge 0 -and $selectedIndex -lt $global:ExpiredApplicationsData.Count) {
+            $selectedApp = $global:ExpiredApplicationsData[$selectedIndex]
+        }
+    }
+    if (-not $selectedApp) {
+        $global:StatusLabel.Text = "Status: Please select an application first (use Find Expired Secrets or Select Application)."
         Write-StatusMessage "Cannot generate secret: No application selected" -Type Warning
         return
     }
 
-    $selectedApp = $global:ExpiredApplicationsData[$selectedIndex]
     $appId = $selectedApp.ApplicationId
     $appName = $selectedApp.DisplayName
 
@@ -1016,6 +1348,7 @@ $global:CopyTicketNoteButton = New-Object System.Windows.Forms.Button
 $global:CopySecretButton = New-Object System.Windows.Forms.Button
 $global:TenantLabel = New-Object System.Windows.Forms.Label
 $global:ExpiredApplicationsData = @() # Store application objects with expired secrets
+$global:SelectedApplicationForSecret = $null # Set by ExpiredSecretsListBox selection OR Select Application dialog
 
 
 # Setup the GUI form and controls (Call function AFTER variables are declared)
@@ -1029,6 +1362,7 @@ Write-Host "GUI form closed."
 Write-Host "Cleaning up resources..."
 # Clean up objects when the form is closed
 $global:Form.Dispose()
+if ($global:TenantComboBox) { $global:TenantComboBox.Dispose() }
 $global:ConnectButton.Dispose()
 $global:DisconnectButton.Dispose()
 $global:StatusLabel.Dispose()
@@ -1046,6 +1380,9 @@ $global:DeleteSecretButton.Dispose()
 $global:AddAtrPermissionsButton.Dispose()
 $global:CopyTicketNoteButton.Dispose()
 $global:TenantLabel.Dispose()
+if ($global:AddAppButton) { $global:AddAppButton.Dispose() }
+if ($global:DeleteAppButton) { $global:DeleteAppButton.Dispose() }
+if ($global:SelectAppButton) { $global:SelectAppButton.Dispose() }
 Write-Host "Resources cleaned up."
 
 # Optional: Disconnect on script exit if still connected
