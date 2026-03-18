@@ -136,13 +136,15 @@ Function Import-RequiredModules {
         [ValidateNotNullOrEmpty()]
         [string[]]$Modules
     )
-    Write-Host "Attempting to import required modules: $($Modules -join ', ')..."
+    # Import only Microsoft.Graph.Applications to avoid "Assembly with same name is already loaded".
+    # Applications depends on Microsoft.Graph.Authentication and loads it automatically.
+    # Importing both explicitly causes a conflict when Applications tries to load Authentication again.
+    $moduleToImport = "Microsoft.Graph.Applications"
+    Write-Host "Attempting to import required modules (via $moduleToImport, which includes Authentication)..."
     try {
-        foreach ($moduleName in $Modules) {
-            Write-Host " - Importing '$moduleName'..."
-            Import-Module -Name $moduleName -ErrorAction Stop
-            Write-Host " - '$moduleName' imported successfully." -ForegroundColor Green
-        }
+        Write-Host " - Importing '$moduleToImport'..."
+        Import-Module -Name $moduleToImport -ErrorAction Stop
+        Write-Host " - '$moduleToImport' imported successfully." -ForegroundColor Green
         Write-Host "All required modules imported." -ForegroundColor Green
         return $true # Indicate success
     } catch {
@@ -158,7 +160,7 @@ function Setup-GUI {
     Write-Host "Setting up GUI..."
     # Form
     $global:Form.Text = "Entra ID Secret Management"
-    $global:Form.Size = New-Object System.Drawing.Size($GUI_FORM_WIDTH, $GUI_FORM_HEIGHT)
+    $global:Form.Size = [System.Drawing.Size]::new([int]$GUI_FORM_WIDTH, [int]$GUI_FORM_HEIGHT)
     $global:Form.StartPosition = "CenterScreen"
     $global:Form.FormBorderStyle = "FixedSingle" # Prevent resizing
     $global:Form.MaximizeBox = $false
@@ -178,14 +180,14 @@ function Setup-GUI {
     # Tenant selector (Graph app sessions from WCM, shared with ExchangeOnlineAnalyzer)
     $tenantLabel = New-Object System.Windows.Forms.Label
     $tenantLabel.Text = "Tenant:"
-    $tenantLabel.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row1Y + 6)
-    $tenantLabel.Size = New-Object System.Drawing.Size(45, $GUI_LABEL_HEIGHT)
+    $tenantLabel.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, [int]($row1Y + 6))
+    $tenantLabel.Size = [System.Drawing.Size]::new(45, [int]$GUI_LABEL_HEIGHT)
     $global:Form.Controls.Add($tenantLabel)
 
-    $tenantComboX = $GUI_MARGIN + 50
+    $tenantComboX = [int]($GUI_MARGIN + 50)
     $global:TenantComboBox = New-Object System.Windows.Forms.ComboBox
-    $global:TenantComboBox.Location = New-Object System.Drawing.Point($tenantComboX, $row1Y)
-    $global:TenantComboBox.Size = New-Object System.Drawing.Size(220, 25)
+    $global:TenantComboBox.Location = [System.Drawing.Point]::new($tenantComboX, $row1Y)
+    $global:TenantComboBox.Size = [System.Drawing.Size]::new(220, 25)
     $global:TenantComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
     $global:TenantComboBox.TabIndex = 0
     Update-TenantComboBox
@@ -194,157 +196,157 @@ function Setup-GUI {
     # Refresh tenants button (reload WCM app sessions after adding via ExchangeOnlineAnalyzer)
     $refreshTenantsBtn = New-Object System.Windows.Forms.Button
     $refreshTenantsBtn.Text = "↻"
-    $refreshTenantsBtn.Location = New-Object System.Drawing.Point($tenantComboX + 222, $row1Y)
-    $refreshTenantsBtn.Size = New-Object System.Drawing.Size(28, $GUI_BUTTON_HEIGHT)
+    $refreshTenantsBtn.Location = [System.Drawing.Point]::new($tenantComboX + 222, $row1Y)
+    $refreshTenantsBtn.Size = [System.Drawing.Size]::new(28, [int]$GUI_BUTTON_HEIGHT)
     $refreshTenantsBtn.Add_Click({ Update-TenantComboBox })
     $global:Form.Controls.Add($refreshTenantsBtn)
 
     # Connect Button
-    $connectX = $tenantComboX + 220 + 28 + $GUI_MARGIN
-    $global:ConnectButton.Location = New-Object System.Drawing.Point($connectX, $row1Y)
-    $global:ConnectButton.Size = New-Object System.Drawing.Size($GUI_BUTTON_WIDTH, $GUI_BUTTON_HEIGHT)
+    $connectX = [int]($tenantComboX + 220 + 28 + $GUI_MARGIN)
+    $global:ConnectButton.Location = [System.Drawing.Point]::new($connectX, $row1Y)
+    $global:ConnectButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH, [int]$GUI_BUTTON_HEIGHT)
     $global:ConnectButton.Text = "Connect"
     $global:Form.Controls.Add($global:ConnectButton)
 
     # Disconnect Button
-    $disconnectX = $connectX + $GUI_BUTTON_WIDTH + $GUI_MARGIN
-    $global:DisconnectButton.Location = New-Object System.Drawing.Point($disconnectX, $row1Y)
-    $global:DisconnectButton.Size = New-Object System.Drawing.Size($GUI_BUTTON_WIDTH, $GUI_BUTTON_HEIGHT)
+    $disconnectX = [int]($connectX + $GUI_BUTTON_WIDTH + $GUI_MARGIN)
+    $global:DisconnectButton.Location = [System.Drawing.Point]::new($disconnectX, $row1Y)
+    $global:DisconnectButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH, [int]$GUI_BUTTON_HEIGHT)
     $global:DisconnectButton.Text = "Disconnect"
     $global:DisconnectButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:DisconnectButton)
 
     # Add App button (create XOA app registration, save to WCM)
-    $addAppX = $disconnectX + $GUI_BUTTON_WIDTH + $GUI_MARGIN
+    $addAppX = [int]($disconnectX + $GUI_BUTTON_WIDTH + $GUI_MARGIN)
     $global:AddAppButton = New-Object System.Windows.Forms.Button
-    $global:AddAppButton.Location = New-Object System.Drawing.Point($addAppX, $row1Y)
-    $global:AddAppButton.Size = New-Object System.Drawing.Size(90, $GUI_BUTTON_HEIGHT)
+    $global:AddAppButton.Location = [System.Drawing.Point]::new($addAppX, $row1Y)
+    $global:AddAppButton.Size = [System.Drawing.Size]::new(90, [int]$GUI_BUTTON_HEIGHT)
     $global:AddAppButton.Text = "Add App"
     $global:Form.Controls.Add($global:AddAppButton)
 
     # Delete App button (remove XOA app registration per tenant)
-    $deleteAppX = $addAppX + 90 + $GUI_SPACING
+    $deleteAppX = [int]($addAppX + 90 + $GUI_SPACING)
     $global:DeleteAppButton = New-Object System.Windows.Forms.Button
-    $global:DeleteAppButton.Location = New-Object System.Drawing.Point($deleteAppX, $row1Y)
-    $global:DeleteAppButton.Size = New-Object System.Drawing.Size(90, $GUI_BUTTON_HEIGHT)
+    $global:DeleteAppButton.Location = [System.Drawing.Point]::new($deleteAppX, $row1Y)
+    $global:DeleteAppButton.Size = [System.Drawing.Size]::new(90, [int]$GUI_BUTTON_HEIGHT)
     $global:DeleteAppButton.Text = "Delete App"
     $global:DeleteAppButton.BackColor = [System.Drawing.Color]::FromArgb(198, 40, 40)
     $global:DeleteAppButton.ForeColor = [System.Drawing.Color]::White
     $global:Form.Controls.Add($global:DeleteAppButton)
 
     # Copy Ticket Note Button
-    $copyTicketX = $deleteAppX + 90 + $GUI_MARGIN
-    $global:CopyTicketNoteButton.Location = New-Object System.Drawing.Point($copyTicketX, $row1Y)
-    $global:CopyTicketNoteButton.Size = New-Object System.Drawing.Size(150, $GUI_BUTTON_HEIGHT)
+    $copyTicketX = [int]($deleteAppX + 90 + $GUI_MARGIN)
+    $global:CopyTicketNoteButton.Location = [System.Drawing.Point]::new($copyTicketX, $row1Y)
+    $global:CopyTicketNoteButton.Size = [System.Drawing.Size]::new(150, [int]$GUI_BUTTON_HEIGHT)
     $global:CopyTicketNoteButton.Text = "Copy Ticket Note"
     $global:CopyTicketNoteButton.Enabled = $true # Always enabled
     $global:Form.Controls.Add($global:CopyTicketNoteButton)
 
     # Status Label
-    $statusWidth = $GUI_FORM_WIDTH - (2 * $GUI_MARGIN)
-    $global:StatusLabel.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row2Y)
-    $global:StatusLabel.Size = New-Object System.Drawing.Size($statusWidth, $GUI_LABEL_HEIGHT)
+    $statusWidth = [int]($GUI_FORM_WIDTH - (2 * $GUI_MARGIN))
+    $global:StatusLabel.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $row2Y)
+    $global:StatusLabel.Size = [System.Drawing.Size]::new($statusWidth, [int]$GUI_LABEL_HEIGHT)
     $global:StatusLabel.Text = "Status: Disconnected"
     $global:Form.Controls.Add($global:StatusLabel)
 
     # Find Secrets Button
-    $global:FindSecretsButton.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row3Y)
-    $global:FindSecretsButton.Size = New-Object System.Drawing.Size($GUI_BUTTON_WIDTH_WIDE, $GUI_BUTTON_HEIGHT)
+    $global:FindSecretsButton.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $row3Y)
+    $global:FindSecretsButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH_WIDE, [int]$GUI_BUTTON_HEIGHT)
     $global:FindSecretsButton.Text = "Find Expired Secrets"
     $global:FindSecretsButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:FindSecretsButton)
 
     # Select Application button (add secret without finding expired first)
-    $selectAppX = $GUI_MARGIN + $GUI_BUTTON_WIDTH_WIDE + $GUI_MARGIN
+    $selectAppX = [int]($GUI_MARGIN + $GUI_BUTTON_WIDTH_WIDE + $GUI_MARGIN)
     $global:SelectAppButton = New-Object System.Windows.Forms.Button
-    $global:SelectAppButton.Location = New-Object System.Drawing.Point($selectAppX, $row3Y)
-    $global:SelectAppButton.Size = New-Object System.Drawing.Size(140, $GUI_BUTTON_HEIGHT)
+    $global:SelectAppButton.Location = [System.Drawing.Point]::new($selectAppX, $row3Y)
+    $global:SelectAppButton.Size = [System.Drawing.Size]::new(140, [int]$GUI_BUTTON_HEIGHT)
     $global:SelectAppButton.Text = "Select Application"
     $global:SelectAppButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:SelectAppButton)
 
     # Expired Secrets Label
-    $global:ExpiredSecretsLabel.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row4Y)
-    $global:ExpiredSecretsLabel.Size = New-Object System.Drawing.Size(300, $GUI_LABEL_HEIGHT)
+    $global:ExpiredSecretsLabel.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $row4Y)
+    $global:ExpiredSecretsLabel.Size = [System.Drawing.Size]::new(300, [int]$GUI_LABEL_HEIGHT)
     $global:ExpiredSecretsLabel.Text = "Applications with Expired Secrets:"
     $global:Form.Controls.Add($global:ExpiredSecretsLabel)
 
     # Expired Secrets ListBox
-    $listBoxWidth = $GUI_FORM_WIDTH - (2 * $GUI_MARGIN)
-    $global:ExpiredSecretsListBox.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row5Y)
-    $global:ExpiredSecretsListBox.Size = New-Object System.Drawing.Size($listBoxWidth, $listBoxHeight)
+    $listBoxWidth = [int]($GUI_FORM_WIDTH - (2 * $GUI_MARGIN))
+    $global:ExpiredSecretsListBox.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $row5Y)
+    $global:ExpiredSecretsListBox.Size = [System.Drawing.Size]::new($listBoxWidth, $listBoxHeight)
     $global:ExpiredSecretsListBox.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:ExpiredSecretsListBox)
 
     # Selected Secret Label
-    $global:SelectedSecretLabel.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row6Y)
-    $global:SelectedSecretLabel.Size = New-Object System.Drawing.Size(150, $GUI_LABEL_HEIGHT)
+    $global:SelectedSecretLabel.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $row6Y)
+    $global:SelectedSecretLabel.Size = [System.Drawing.Size]::new(150, [int]$GUI_LABEL_HEIGHT)
     $global:SelectedSecretLabel.Text = "Selected Application:"
     $global:Form.Controls.Add($global:SelectedSecretLabel)
 
     # Selected App Name Label
-    $selectedAppX = $GUI_MARGIN + 160
-    $global:SelectedAppNameLabel.Location = New-Object System.Drawing.Point($selectedAppX, $row6Y)
-    $global:SelectedAppNameLabel.Size = New-Object System.Drawing.Size(400, $GUI_LABEL_HEIGHT)
+    $selectedAppX = [int]($GUI_MARGIN + 160)
+    $global:SelectedAppNameLabel.Location = [System.Drawing.Point]::new($selectedAppX, $row6Y)
+    $global:SelectedAppNameLabel.Size = [System.Drawing.Size]::new(400, [int]$GUI_LABEL_HEIGHT)
     $global:SelectedAppNameLabel.Text = ""
     $global:Form.Controls.Add($global:SelectedAppNameLabel)
 
     # Selected End Date Label
-    $global:SelectedEndDateLabel.Location = New-Object System.Drawing.Point($selectedAppX, $row7Y)
-    $global:SelectedEndDateLabel.Size = New-Object System.Drawing.Size(400, $GUI_LABEL_HEIGHT)
+    $global:SelectedEndDateLabel.Location = [System.Drawing.Point]::new($selectedAppX, $row7Y)
+    $global:SelectedEndDateLabel.Size = [System.Drawing.Size]::new(400, [int]$GUI_LABEL_HEIGHT)
     $global:SelectedEndDateLabel.Text = ""
     $global:Form.Controls.Add($global:SelectedEndDateLabel)
 
     # Generate Secret Button
-    $global:GenerateSecretButton.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row8Y)
-    $global:GenerateSecretButton.Size = New-Object System.Drawing.Size(150, $GUI_BUTTON_HEIGHT)
+    $global:GenerateSecretButton.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $row8Y)
+    $global:GenerateSecretButton.Size = [System.Drawing.Size]::new(150, [int]$GUI_BUTTON_HEIGHT)
     $global:GenerateSecretButton.Text = "Generate New Secret"
     $global:GenerateSecretButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:GenerateSecretButton)
 
     # Delete Expired Secret Button
-    $deleteButtonX = $GUI_MARGIN + 150 + $GUI_MARGIN
+    $deleteButtonX = [int]($GUI_MARGIN + 150 + $GUI_MARGIN)
     $global:DeleteSecretButton = New-Object System.Windows.Forms.Button
-    $global:DeleteSecretButton.Location = New-Object System.Drawing.Point($deleteButtonX, $row8Y)
-    $global:DeleteSecretButton.Size = New-Object System.Drawing.Size($GUI_BUTTON_WIDTH_WIDE, $GUI_BUTTON_HEIGHT)
+    $global:DeleteSecretButton.Location = [System.Drawing.Point]::new($deleteButtonX, $row8Y)
+    $global:DeleteSecretButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH_WIDE, [int]$GUI_BUTTON_HEIGHT)
     $global:DeleteSecretButton.Text = "Delete Expired Secret"
     $global:DeleteSecretButton.Enabled = $false
     $global:Form.Controls.Add($global:DeleteSecretButton)
 
     # Add ATR Permissions Button (Barracuda XDR automatic remediation)
-    $addAtrButtonX = $deleteButtonX + $GUI_BUTTON_WIDTH_WIDE + $GUI_MARGIN
+    $addAtrButtonX = [int]($deleteButtonX + $GUI_BUTTON_WIDTH_WIDE + $GUI_MARGIN)
     $global:AddAtrPermissionsButton = New-Object System.Windows.Forms.Button
-    $global:AddAtrPermissionsButton.Location = New-Object System.Drawing.Point($addAtrButtonX, $row8Y)
-    $global:AddAtrPermissionsButton.Size = New-Object System.Drawing.Size(200, $GUI_BUTTON_HEIGHT)
+    $global:AddAtrPermissionsButton.Location = [System.Drawing.Point]::new($addAtrButtonX, $row8Y)
+    $global:AddAtrPermissionsButton.Size = [System.Drawing.Size]::new(200, [int]$GUI_BUTTON_HEIGHT)
     $global:AddAtrPermissionsButton.Text = "Add ATR Permissions"
     $global:AddAtrPermissionsButton.Enabled = $false
     $global:AddAtrPermissionsButton.ForeColor = [System.Drawing.Color]::DarkBlue
     $global:Form.Controls.Add($global:AddAtrPermissionsButton)
 
     # New Secret Label
-    $global:NewSecretLabel.Location = New-Object System.Drawing.Point($GUI_MARGIN, $row9Y)
-    $global:NewSecretLabel.Size = New-Object System.Drawing.Size(100, $GUI_LABEL_HEIGHT)
+    $global:NewSecretLabel.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $row9Y)
+    $global:NewSecretLabel.Size = [System.Drawing.Size]::new(100, [int]$GUI_LABEL_HEIGHT)
     $global:NewSecretLabel.Text = "New Secret:"
     $global:Form.Controls.Add($global:NewSecretLabel)
 
     # New Secret TextBox
     $secretTextX = [int]($GUI_MARGIN + 110)
-    $global:NewSecretTextBox.Location = New-Object System.Drawing.Point($secretTextX, ($row9Y - 3))
-    $global:NewSecretTextBox.Size = New-Object System.Drawing.Size(450, 25)
+    $global:NewSecretTextBox.Location = [System.Drawing.Point]::new($secretTextX, [int]($row9Y - 3))
+    $global:NewSecretTextBox.Size = [System.Drawing.Size]::new(450, 25)
     $global:NewSecretTextBox.ReadOnly = $true # Make it read-only
     $global:Form.Controls.Add($global:NewSecretTextBox)
 
     # Copy Secret Button
-    $copySecretButtonX = $secretTextX + 450 + $GUI_MARGIN
-    $global:CopySecretButton.Location = New-Object System.Drawing.Point($copySecretButtonX, ($row9Y - 3))
-    $global:CopySecretButton.Size = New-Object System.Drawing.Size(120, 30)
+    $copySecretButtonX = [int]($secretTextX + 450 + $GUI_MARGIN)
+    $global:CopySecretButton.Location = [System.Drawing.Point]::new($copySecretButtonX, [int]($row9Y - 3))
+    $global:CopySecretButton.Size = [System.Drawing.Size]::new(120, 30)
     $global:CopySecretButton.Text = "Copy Secret"
     $global:CopySecretButton.Enabled = $false # Disabled initially
     $global:Form.Controls.Add($global:CopySecretButton)
 
     # Tenant Label (at bottom)
-    $global:TenantLabel.Location = New-Object System.Drawing.Point(10, 540)
-    $global:TenantLabel.Size = New-Object System.Drawing.Size(820, 20)
+    $global:TenantLabel.Location = [System.Drawing.Point]::new(10, 540)
+    $global:TenantLabel.Size = [System.Drawing.Size]::new(820, 20)
     $global:TenantLabel.Text = "Tenant: Not Connected"
     $global:TenantLabel.ForeColor = [System.Drawing.Color]::Gray
     $global:Form.Controls.Add($global:TenantLabel)
@@ -422,7 +424,7 @@ function Update-TenantComboBox {
         if (Test-Path $graphAppCredentialModulePath) {
             Import-Module $graphAppCredentialModulePath -Force -ErrorAction SilentlyContinue
             if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
-                $tenantList = Get-WCMTenantListWithNames
+                $tenantList = Get-WCMTenantListWithNames | Sort-Object -Property DisplayText
                 foreach ($t in $tenantList) {
                     $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = $t.DisplayText; TenantId = $t.TenantId }) | Out-Null
                 }
@@ -491,28 +493,28 @@ function Delete-XOAAppRegistration {
     }
     $selForm = New-Object System.Windows.Forms.Form
     $selForm.Text = "Select Tenant(s) to Remove App From"
-    $selForm.Size = New-Object System.Drawing.Size(450, 380)
+    $selForm.Size = [System.Drawing.Size]::new(450, 380)
     $selForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $selForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = "Select which tenant(s) to remove the Graph app registration from (River Run Security Investigator):"
-    $lbl.Location = New-Object System.Drawing.Point(10, 10)
-    $lbl.Size = New-Object System.Drawing.Size(410, 35)
+    $lbl.Location = [System.Drawing.Point]::new(10, 10)
+    $lbl.Size = [System.Drawing.Size]::new(410, 35)
     $lbl.AutoSize = $true
     $clb = New-Object System.Windows.Forms.CheckedListBox
-    $clb.Location = New-Object System.Drawing.Point(10, 50)
-    $clb.Size = New-Object System.Drawing.Size(410, 240)
+    $clb.Location = [System.Drawing.Point]::new(10, 50)
+    $clb.Size = [System.Drawing.Size]::new(410, 240)
     $clb.CheckOnClick = $true
     foreach ($t in $tenantList) { [void]$clb.Items.Add($t.DisplayText, $false) }
     $btnOk = New-Object System.Windows.Forms.Button
     $btnOk.Text = "Remove Selected"
-    $btnOk.Location = New-Object System.Drawing.Point(180, 300)
-    $btnOk.Size = New-Object System.Drawing.Size(120, 30)
+    $btnOk.Location = [System.Drawing.Point]::new(180, 300)
+    $btnOk.Size = [System.Drawing.Size]::new(120, 30)
     $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $btnCancel = New-Object System.Windows.Forms.Button
     $btnCancel.Text = "Cancel"
-    $btnCancel.Location = New-Object System.Drawing.Point(310, 300)
-    $btnCancel.Size = New-Object System.Drawing.Size(90, 30)
+    $btnCancel.Location = [System.Drawing.Point]::new(310, 300)
+    $btnCancel.Size = [System.Drawing.Size]::new(90, 30)
     $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $selForm.AcceptButton = $btnOk
     $selForm.CancelButton = $btnCancel
@@ -750,20 +752,29 @@ function Update-SelectedSecretInfo {
     $global:CopySecretButton.Enabled = $false
     $global:DeleteSecretButton.Enabled = $false
     $global:AddAtrPermissionsButton.Enabled = $false
-    $global:SelectedApplicationForSecret = $null
 
     if ($selectedIndex -ge 0 -and $selectedIndex -lt $global:ExpiredApplicationsData.Count) {
+        # Valid selection from Expired Secrets list
         $selectedApp = $global:ExpiredApplicationsData[$selectedIndex]
+        $global:SelectedApplicationForSecret = [pscustomobject]@{ ApplicationId = $selectedApp.ApplicationId; DisplayName = $selectedApp.DisplayName; EndDate = $selectedApp.EndDate }
         $global:SelectedAppNameLabel.Text = $selectedApp.DisplayName
         $global:SelectedEndDateLabel.Text = "Oldest Expired Date: $($selectedApp.EndDate.ToShortDateString())"
         $global:GenerateSecretButton.Enabled = $true
         $global:DeleteSecretButton.Enabled = $true
         $global:AddAtrPermissionsButton.Enabled = $true
-        $global:SelectedApplicationForSecret = [pscustomobject]@{ ApplicationId = $selectedApp.ApplicationId; DisplayName = $selectedApp.DisplayName; EndDate = $selectedApp.EndDate }
         Write-Host "Selected application: $($selectedApp.DisplayName)"
     } else {
+        # No valid selection from list - preserve selection from Select Application if present
+        if ($global:SelectedApplicationForSecret) {
+            $global:SelectedAppNameLabel.Text = $global:SelectedApplicationForSecret.DisplayName
+            $global:SelectedEndDateLabel.Text = "Selected for secret rotation"
+            $global:GenerateSecretButton.Enabled = $true
+            $global:AddAtrPermissionsButton.Enabled = $true
+        } else {
+            $global:SelectedApplicationForSecret = $null
+        }
         $global:DeleteSecretButton.Enabled = $false
-        Write-Host "No valid application selected."
+        Write-Host "No valid application selected from list."
     }
 }
 
@@ -794,26 +805,26 @@ function Show-SelectApplicationDialog {
     }
     $selForm = New-Object System.Windows.Forms.Form
     $selForm.Text = "Select Application (Add Secret)"
-    $selForm.Size = New-Object System.Drawing.Size(500, 450)
+    $selForm.Size = [System.Drawing.Size]::new(500, 450)
     $selForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $selForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::Sizable
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = "Select an application to add a new secret:"
-    $lbl.Location = New-Object System.Drawing.Point(10, 10)
-    $lbl.Size = New-Object System.Drawing.Size(460, 20)
+    $lbl.Location = [System.Drawing.Point]::new(10, 10)
+    $lbl.Size = [System.Drawing.Size]::new(460, 20)
     $selForm.Controls.Add($lbl)
     $searchLbl = New-Object System.Windows.Forms.Label
     $searchLbl.Text = "Search:"
-    $searchLbl.Location = New-Object System.Drawing.Point(10, 35)
-    $searchLbl.Size = New-Object System.Drawing.Size(45, 20)
+    $searchLbl.Location = [System.Drawing.Point]::new(10, 35)
+    $searchLbl.Size = [System.Drawing.Size]::new(45, 20)
     $selForm.Controls.Add($searchLbl)
     $searchBox = New-Object System.Windows.Forms.TextBox
-    $searchBox.Location = New-Object System.Drawing.Point(60, 33)
-    $searchBox.Size = New-Object System.Drawing.Size(410, 20)
+    $searchBox.Location = [System.Drawing.Point]::new(60, 33)
+    $searchBox.Size = [System.Drawing.Size]::new(410, 20)
     $selForm.Controls.Add($searchBox)
     $listBox = New-Object System.Windows.Forms.ListBox
-    $listBox.Location = New-Object System.Drawing.Point(10, 60)
-    $listBox.Size = New-Object System.Drawing.Size(460, 300)
+    $listBox.Location = [System.Drawing.Point]::new(10, 60)
+    $listBox.Size = [System.Drawing.Size]::new(460, 300)
     $listBox.DisplayMember = "DisplayName"
     foreach ($a in $appList) { [void]$listBox.Items.Add($a) }
     $selForm.Controls.Add($listBox)
@@ -832,13 +843,13 @@ function Show-SelectApplicationDialog {
     $searchBox.Add_TextChanged($filterScript)
     $btnOk = New-Object System.Windows.Forms.Button
     $btnOk.Text = "Select"
-    $btnOk.Location = New-Object System.Drawing.Point(200, 370)
-    $btnOk.Size = New-Object System.Drawing.Size(90, 28)
+    $btnOk.Location = [System.Drawing.Point]::new(200, 370)
+    $btnOk.Size = [System.Drawing.Size]::new(90, 28)
     $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
     $btnCancel = New-Object System.Windows.Forms.Button
     $btnCancel.Text = "Cancel"
-    $btnCancel.Location = New-Object System.Drawing.Point(300, 370)
-    $btnCancel.Size = New-Object System.Drawing.Size(90, 28)
+    $btnCancel.Location = [System.Drawing.Point]::new(300, 370)
+    $btnCancel.Size = [System.Drawing.Size]::new(90, 28)
     $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
     $selForm.AcceptButton = $btnOk
     $selForm.CancelButton = $btnCancel
@@ -856,6 +867,7 @@ function Show-SelectApplicationDialog {
     $global:GenerateSecretButton.Enabled = $true
     $global:NewSecretTextBox.Text = ""
     $global:DeleteSecretButton.Enabled = $false
+    $global:AddAtrPermissionsButton.Enabled = $true
     Write-StatusMessage "Selected application: $($selected.DisplayName)" -Type Info
 }
 
@@ -928,7 +940,7 @@ function Generate-NewSecret {
             # Show a custom popup with a read-only textbox, a copy button, a paste screenshot button, and a PictureBox
             $popupForm = New-Object System.Windows.Forms.Form
             $popupForm.Text = $ticketNotePopupTitle
-        $popupForm.Size = New-Object System.Drawing.Size(600, 600)
+        $popupForm.Size = [System.Drawing.Size]::new(600, 600)
         $popupForm.StartPosition = "CenterScreen"
         $popupForm.Topmost = $true
 
@@ -936,15 +948,15 @@ function Generate-NewSecret {
         $textBox.Multiline = $true
         $textBox.ReadOnly = $true
         $textBox.ScrollBars = "Vertical"
-        $textBox.Size = New-Object System.Drawing.Size(560, 200)
-        $textBox.Location = New-Object System.Drawing.Point(10, 10)
+        $textBox.Size = [System.Drawing.Size]::new(560, 200)
+        $textBox.Location = [System.Drawing.Point]::new(10, 10)
         $textBox.Text = $ticketNote
         $textBox.Font = New-Object System.Drawing.Font("Consolas", 10)
 
         $copyButton = New-Object System.Windows.Forms.Button
         $copyButton.Text = "Copy to Clipboard"
-        $copyButton.Size = New-Object System.Drawing.Size(150, 30)
-        $copyButton.Location = New-Object System.Drawing.Point(10, 220)
+        $copyButton.Size = [System.Drawing.Size]::new(150, 30)
+        $copyButton.Location = [System.Drawing.Point]::new(10, 220)
         $copyButton.Add_Click({
             [System.Windows.Forms.Clipboard]::SetText($textBox.Text)
             if ($pictureBox.Image) {
@@ -956,14 +968,14 @@ function Generate-NewSecret {
 
         $pasteScreenshotButton = New-Object System.Windows.Forms.Button
         $pasteScreenshotButton.Text = "Paste Screenshot"
-        $pasteScreenshotButton.Size = New-Object System.Drawing.Size(150, 30)
-        $pasteScreenshotButton.Location = New-Object System.Drawing.Point(170, 220)
+        $pasteScreenshotButton.Size = [System.Drawing.Size]::new(150, 30)
+        $pasteScreenshotButton.Location = [System.Drawing.Point]::new(170, 220)
 
         $pictureBox = New-Object System.Windows.Forms.PictureBox
         $pictureBox.SizeMode = [System.Windows.Forms.PictureBoxSizeMode]::Zoom
         $pictureBox.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
-        $pictureBox.Location = New-Object System.Drawing.Point(10, 260)
-        $pictureBox.Size = New-Object System.Drawing.Size(560, 280)
+        $pictureBox.Location = [System.Drawing.Point]::new(10, 260)
+        $pictureBox.Size = [System.Drawing.Size]::new(560, 280)
 
         $pasteScreenshotButton.Add_Click({
             if ([System.Windows.Forms.Clipboard]::ContainsImage()) {
@@ -976,8 +988,8 @@ function Generate-NewSecret {
 
         $closeButton = New-Object System.Windows.Forms.Button
         $closeButton.Text = "Close"
-        $closeButton.Size = New-Object System.Drawing.Size(100, 30)
-        $closeButton.Location = New-Object System.Drawing.Point(330, 220)
+        $closeButton.Size = [System.Drawing.Size]::new(100, 30)
+        $closeButton.Location = [System.Drawing.Point]::new(330, 220)
         $closeButton.Add_Click({ $popupForm.Close() })
 
         $popupForm.Controls.Add($textBox)
@@ -1052,13 +1064,19 @@ function Add-BarracudaXdrPermissions {
         return
     }
 
-    $selectedIndex = $global:ExpiredSecretsListBox.SelectedIndex
-    if ($selectedIndex -lt 0 -or $selectedIndex -ge $global:ExpiredApplicationsData.Count) {
-        [System.Windows.Forms.MessageBox]::Show("Please select an application first.", "No Application Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+    # Accept selection from either Expired Secrets list or Select Application dialog
+    $selectedApp = $global:SelectedApplicationForSecret
+    if (-not $selectedApp) {
+        $selectedIndex = $global:ExpiredSecretsListBox.SelectedIndex
+        if ($selectedIndex -ge 0 -and $selectedIndex -lt $global:ExpiredApplicationsData.Count) {
+            $selectedApp = $global:ExpiredApplicationsData[$selectedIndex]
+        }
+    }
+    if (-not $selectedApp) {
+        [System.Windows.Forms.MessageBox]::Show("Please select an application first (use Find Expired Secrets or Select Application).", "No Application Selected", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
         return
     }
 
-    $selectedApp = $global:ExpiredApplicationsData[$selectedIndex]
     $appId = $selectedApp.ApplicationId
     $appName = $selectedApp.DisplayName
 
@@ -1213,7 +1231,23 @@ function Add-BarracudaXdrPermissions {
 
     } catch {
         $errMsg = $_.Exception.Message
-        [System.Windows.Forms.MessageBox]::Show("Error adding permissions: $errMsg", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        $hint = ""
+        if ($errMsg -match "Authorization_RequestDenied|Insufficient privileges") {
+            $ctx = Get-MgContext -ErrorAction SilentlyContinue
+            if ($ctx -and $ctx.AuthType -eq "App-only") {
+                $hint = @"
+
+The saved app does not have the required permissions (Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All).
+
+Options:
+• Use 'Interactive (browser)' in the tenant dropdown—your Global Admin role applies when you sign in interactively.
+• Or add those permissions to the saved app in Entra: App registrations > [your app] > API permissions > Add permission > Microsoft Graph > Application permissions, then Grant admin consent.
+"@
+            } else {
+                $hint = "`n`nEnsure your account has Application Administrator (or higher) in Entra. If using a saved app, try 'Interactive (browser)' instead."
+            }
+        }
+        [System.Windows.Forms.MessageBox]::Show("Error adding permissions: $errMsg$hint", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
         $global:StatusLabel.Text = "Status: Error adding permissions - $errMsg"
         Write-StatusMessage "Error adding ATR permissions: $errMsg" -Type Error
     } finally {
