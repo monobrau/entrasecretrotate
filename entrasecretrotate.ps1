@@ -14,16 +14,21 @@ $graphAppCredentialModulePath = Join-Path $PSScriptRoot "Modules\GraphAppCredent
 # Default: sibling directory (e.g. c:\git\exchangeonlineanalyzer when entrasecretrotate is in c:\git\entrasecretrotate)
 $xoaPath = Join-Path (Split-Path $PSScriptRoot -Parent) "exchangeonlineanalyzer"
 
+# Import GraphAppCredential once at startup (avoids redundant imports in Connect/Update/Delete flows)
+if (Test-Path $graphAppCredentialModulePath) {
+    Import-Module $graphAppCredentialModulePath -Force -ErrorAction SilentlyContinue
+}
+
 # Secret naming configuration
 # Customize the display name for new secrets. {YEAR} will be replaced with current year.
-$secretDisplayNameTemplate = "skout{YEAR}"
+$secretDisplayNameTemplate = "secret{YEAR}"
 
 # Ticket note configuration
 # Set to $true to show the ticket note popup, $false to disable
 $showTicketNotePopup = $true
 
 # Customize the ticket note popup title
-$ticketNotePopupTitle = "ConnectWise Ticket Note"
+$ticketNotePopupTitle = "Ticket Note"
 
 # Barracuda XDR ATR (Automatic Threat Response) permissions for automatic remediation
 # Set to $true to also add User.RevokeSessions.All (revoke sessions when blocking users)
@@ -229,8 +234,16 @@ function Setup-GUI {
     $global:AddAppButton.Text = "Add App"
     $global:Form.Controls.Add($global:AddAppButton)
 
+    # Update App Permissions button (add Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All to existing XOA app)
+    $updateAppX = $addAppX + 90 + $GUI_SPACING
+    $global:UpdateAppPermissionsButton = New-Object System.Windows.Forms.Button
+    $global:UpdateAppPermissionsButton.Location = New-Object System.Drawing.Point($updateAppX, $row1Y)
+    $global:UpdateAppPermissionsButton.Size = New-Object System.Drawing.Size(120, $GUI_BUTTON_HEIGHT)
+    $global:UpdateAppPermissionsButton.Text = "Update App Perms"
+    $global:Form.Controls.Add($global:UpdateAppPermissionsButton)
+
     # Delete App button (remove XOA app registration per tenant)
-    $deleteAppX = [int]($addAppX + 90 + $GUI_SPACING)
+    $deleteAppX = [int]($updateAppX + 120 + $GUI_SPACING)
     $global:DeleteAppButton = New-Object System.Windows.Forms.Button
     $global:DeleteAppButton.Location = [System.Drawing.Point]::new($deleteAppX, $row1Y)
     $global:DeleteAppButton.Size = [System.Drawing.Size]::new(90, [int]$GUI_BUTTON_HEIGHT)
@@ -398,17 +411,25 @@ function Setup-GUI {
     # Add ATR Permissions Button Click
     $global:AddAtrPermissionsButton.Add_Click({ Add-BarracudaXdrPermissions })
 
-    # Add App / Delete App button clicks
+    # Add App / Update App Perms / Delete App button clicks
     $global:AddAppButton.Add_Click({ Add-XOAAppRegistration })
+    $global:UpdateAppPermissionsButton.Add_Click({ Update-XOAAppPermissions })
     $global:DeleteAppButton.Add_Click({ Delete-XOAAppRegistration })
 
     # Copy Secret Button Click
     $global:CopySecretButton.Add_Click({
         if ($global:NewSecretTextBox.Text -ne "") {
             [System.Windows.Forms.Clipboard]::SetText($global:NewSecretTextBox.Text)
-            [System.Windows.Forms.MessageBox]::Show("Secret copied to clipboard!", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+            [System.Windows.Forms.MessageBox]::Show("Secret copied to clipboard! Clear clipboard after pasting.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         } else {
             [System.Windows.Forms.MessageBox]::Show("No secret to copy. Please generate a secret first.", "No Secret", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        }
+    })
+
+    # Clear secret from UI when form closes (security: reduce exposure window)
+    $global:Form.Add_FormClosing({
+        if ($global:NewSecretTextBox -and $global:NewSecretTextBox.Text) {
+            $global:NewSecretTextBox.Text = ""
         }
     })
     Write-Host "GUI setup complete."
@@ -420,19 +441,16 @@ function Setup-GUI {
 function Update-TenantComboBox {
     <#
     .SYNOPSIS
-        Populates the tenant dropdown with Graph app sessions from Windows Credential Manager (EOA-GraphApp-* format).
+        Populates the tenant dropdown with Graph app sessions from WCM (EOA-GraphApp-*).
     #>
     if (-not $global:TenantComboBox) { return }
     $global:TenantComboBox.Items.Clear()
     $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = "Interactive (browser)"; TenantId = $null }) | Out-Null
     try {
-        if (Test-Path $graphAppCredentialModulePath) {
-            Import-Module $graphAppCredentialModulePath -Force -ErrorAction SilentlyContinue
-            if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
-                $tenantList = Get-WCMTenantListWithNames | Sort-Object -Property DisplayText
-                foreach ($t in $tenantList) {
-                    $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = $t.DisplayText; TenantId = $t.TenantId }) | Out-Null
-                }
+        if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
+            $tenantList = Get-WCMTenantListWithNames -Prefix EOA | Sort-Object -Property DisplayText
+            foreach ($t in $tenantList) {
+                $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = $t.DisplayText; TenantId = $t.TenantId }) | Out-Null
             }
         }
     } catch { /* non-fatal */ }
@@ -443,16 +461,35 @@ function Update-TenantComboBox {
     }
 }
 
+function Update-XOAAppPermissions {
+    <#
+    .SYNOPSIS
+        Adds Application.ReadWrite.All and AppRoleAssignment.ReadWrite.All to existing XOA app.
+    #>
+    $scriptPath = Join-Path $PSScriptRoot "Update-XOAAppPermissions.ps1"
+    if (-not (Test-Path $scriptPath)) {
+        [System.Windows.Forms.MessageBox]::Show("Script not found: $scriptPath", "Update App Permissions", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        return
+    }
+    try {
+        $psExe = (Get-Process -Id $PID).Path
+        Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`"" -Wait
+        [System.Windows.Forms.MessageBox]::Show("Update complete. The XOA app now has permissions for secret rotation and Add ATR.", "Update App Permissions", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+}
+
 function Add-XOAAppRegistration {
     <#
     .SYNOPSIS
-        Launches ExchangeOnlineAnalyzer's New-GraphInboxRulesApp.ps1 -SaveToWCM to create app registration and save to WCM.
+        Launches ExchangeOnlineAnalyzer's New-GraphInboxRulesApp.ps1 -SaveToWCM.
     #>
     $scriptPath = Join-Path $xoaPath "New-GraphInboxRulesApp.ps1"
     if (-not (Test-Path $scriptPath)) {
         [System.Windows.Forms.MessageBox]::Show(
             "ExchangeOnlineAnalyzer script not found.`n`nExpected: $scriptPath`n`nEnsure ExchangeOnlineAnalyzer is installed at: $xoaPath",
-            "Add App",
+            "Add XOA App",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Warning
         )
@@ -462,16 +499,16 @@ function Add-XOAAppRegistration {
         $psExe = (Get-Process -Id $PID).Path
         Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -SaveToWCM" -Wait
         Update-TenantComboBox
-        [System.Windows.Forms.MessageBox]::Show("Add App completed. Tenant list refreshed.", "Add App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        [System.Windows.Forms.MessageBox]::Show("XOA app created and saved to WCM. For existing XOA apps, use Update App Perms to add Application.ReadWrite.All and AppRoleAssignment.ReadWrite.All for Add ATR.", "Add App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to run Add App: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        [System.Windows.Forms.MessageBox]::Show("Failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 }
 
 function Delete-XOAAppRegistration {
     <#
     .SYNOPSIS
-        Shows tenant selection dialog and runs Remove-GraphInboxRulesApp.ps1 for each selected tenant.
+        Shows tenant selection and runs Remove-GraphInboxRulesApp.ps1 for each selected tenant.
     #>
     $scriptPath = Join-Path $xoaPath "Remove-GraphInboxRulesApp.ps1"
     if (-not (Test-Path $scriptPath)) {
@@ -485,15 +522,12 @@ function Delete-XOAAppRegistration {
     }
     $tenantList = @()
     try {
-        if (Test-Path $graphAppCredentialModulePath) {
-            Import-Module $graphAppCredentialModulePath -Force -ErrorAction SilentlyContinue
-        }
         if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
-            $tenantList = Get-WCMTenantListWithNames
+            $tenantList = Get-WCMTenantListWithNames -Prefix EOA
         }
     } catch {}
     if ($tenantList.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager. Nothing to remove.", "Delete App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager.", "Delete App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         return
     }
     $selForm = New-Object System.Windows.Forms.Form
@@ -502,7 +536,7 @@ function Delete-XOAAppRegistration {
     $selForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $selForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $lbl = New-Object System.Windows.Forms.Label
-    $lbl.Text = "Select which tenant(s) to remove the Graph app registration from (River Run Security Investigator):"
+    $lbl.Text = "Select which tenant(s) to remove the XOA app from:"
     $lbl.Location = [System.Drawing.Point]::new(10, 10)
     $lbl.Size = [System.Drawing.Size]::new(410, 35)
     $lbl.AutoSize = $true
@@ -546,9 +580,9 @@ function Delete-XOAAppRegistration {
             Start-Process $psExe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -TenantId `"$tid`" -Force" -Wait
         }
         Update-TenantComboBox
-        [System.Windows.Forms.MessageBox]::Show("App removal completed for $($selected.Count) tenant(s). Tenant list refreshed.", "Delete App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        [System.Windows.Forms.MessageBox]::Show("App removal completed for $($selected.Count) tenant(s).", "Delete App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     } catch {
-        [System.Windows.Forms.MessageBox]::Show("Failed to run Delete App: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+        [System.Windows.Forms.MessageBox]::Show("Failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 }
 
@@ -582,20 +616,24 @@ function Connect-Tenant {
 
     try {
         if ($selectedTenantId) {
-            # Use Graph app credentials from Windows Credential Manager (EOA-GraphApp-* format)
+            # Use Graph app credentials from Windows Credential Manager (EOA-GraphApp-*)
             Write-StatusMessage "Connecting via app credentials for tenant $selectedTenantId..." -Type Info
-            if (Test-Path $graphAppCredentialModulePath) {
-                Import-Module $graphAppCredentialModulePath -Force -ErrorAction SilentlyContinue
-            }
             $token = $null
-            if (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue) {
-                $token = Get-GraphAppTokenFromWCM -TenantId $selectedTenantId
+            $secToken = $null
+            try {
+                if (Get-Command Get-GraphAppTokenFromWCM -ErrorAction SilentlyContinue) {
+                    $token = Get-GraphAppTokenFromWCM -TenantId $selectedTenantId -Prefix EOA
+                }
+                if (-not $token) {
+                    throw "No app credentials found for tenant $selectedTenantId in Windows Credential Manager. Click Add App to create XOA app, or use Interactive (browser)."
+                }
+                $secToken = ConvertTo-SecureString $token -AsPlainText -Force
+                Connect-MgGraph -AccessToken $secToken -NoWelcome -ErrorAction Stop
+            } finally {
+                # Clear token from memory (security: avoid plain-text token persistence)
+                if ($token) { $token = [string]::Empty }
+                if ($secToken) { $secToken = $null }
             }
-            if (-not $token) {
-                throw "No app credentials found for tenant $selectedTenantId in Windows Credential Manager. Add credentials via ExchangeOnlineAnalyzer or use Interactive (browser)."
-            }
-            $secToken = ConvertTo-SecureString $token -AsPlainText -Force
-            Connect-MgGraph -AccessToken $secToken -NoWelcome -ErrorAction Stop
         } else {
             Write-StatusMessage "Connecting to Microsoft Graph (interactive)..." -Type Info
             Connect-MgGraph -Scopes $scopes -ErrorAction Stop
@@ -845,7 +883,11 @@ function Show-SelectApplicationDialog {
         }
     }
     $script:allApps = $appList
-    $searchBox.Add_TextChanged($filterScript)
+    # Debounce search: 200ms delay avoids filtering on every keystroke for large app lists
+    $searchTimer = New-Object System.Windows.Forms.Timer
+    $searchTimer.Interval = 200
+    $searchTimer.Add_Tick({ $searchTimer.Stop(); & $filterScript })
+    $searchBox.Add_TextChanged({ $searchTimer.Stop(); $searchTimer.Start() })
     $btnOk = New-Object System.Windows.Forms.Button
     $btnOk.Text = "Select"
     $btnOk.Location = [System.Drawing.Point]::new(200, 370)
@@ -870,6 +912,7 @@ function Show-SelectApplicationDialog {
     $global:SelectedAppNameLabel.Text = $selected.DisplayName
     $global:SelectedEndDateLabel.Text = "Selected for secret rotation"
     $global:GenerateSecretButton.Enabled = $true
+    $global:AddAtrPermissionsButton.Enabled = $true
     $global:NewSecretTextBox.Text = ""
     $global:DeleteSecretButton.Enabled = $false
     $global:AddAtrPermissionsButton.Enabled = $true
@@ -913,7 +956,7 @@ function Generate-NewSecret {
     $global:CopySecretButton.Enabled = $false # Disable copy button when clearing
     Write-StatusMessage "Generating secret for App ID: $appId, Name: $appName" -Type Info
 
-    # Generate display name from template (skoutYYYY - current year)
+    # Generate display name from template (e.g. secretYYYY - current year)
     $currentYear = (Get-Date).Year
     $displayName = $secretDisplayNameTemplate -replace '\{YEAR\}', $currentYear
 
@@ -930,8 +973,11 @@ function Generate-NewSecret {
 
         # The actual secret value is in the SecretText property and is only returned NOW
         $secretValue = $newSecret.SecretText
-
-        $global:NewSecretTextBox.Text = $secretValue
+        try {
+            $global:NewSecretTextBox.Text = $secretValue
+        } finally {
+            $secretValue = [string]::Empty  # Clear from memory as soon as displayed
+        }
         $global:StatusLabel.Text = "Status: New secret generated for '$appName'. COPY IMMEDIATELY!"
         $global:CopySecretButton.Enabled = $true # Enable copy button when secret is generated
         Write-StatusMessage "New secret generated successfully for '$appName'. Secret displayed in textbox." -Type Success
@@ -1069,7 +1115,7 @@ function Add-BarracudaXdrPermissions {
         return
     }
 
-    # Accept selection from either Expired Secrets list or Select Application dialog
+    # Get selected app from either Expired Secrets list or Select Application dialog
     $selectedApp = $global:SelectedApplicationForSecret
     if (-not $selectedApp) {
         $selectedIndex = $global:ExpiredSecretsListBox.SelectedIndex
@@ -1237,7 +1283,7 @@ function Add-BarracudaXdrPermissions {
     } catch {
         $errMsg = $_.Exception.Message
         $hint = ""
-        if ($errMsg -match "Authorization_RequestDenied|Insufficient privileges") {
+        if ($errMsg -match "Authorization_RequestDenied|Insufficient privileges|Forbidden|403|Access denied") {
             $ctx = Get-MgContext -ErrorAction SilentlyContinue
             if ($ctx -and $ctx.AuthType -eq "App-only") {
                 $hint = @"
@@ -1264,9 +1310,9 @@ function Copy-TicketNoteTemplate {
     Write-Host "Generating ticket note template..."
     # Get local time (not UTC) for the timestamp - [DateTime]::Now explicitly returns local time
     $now = [DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss')
-    # Display name (same logic as in Generate-NewSecret): skoutYYYY
+    # Display name (same logic as in Generate-NewSecret)
     $currentYear = (Get-Date).Year
-    $displayName = "skout$currentYear"
+    $displayName = $secretDisplayNameTemplate -replace '\{YEAR\}', $currentYear
     
     $ticketNote = @"
 Barracuda XDR O365 Monitoring Integration - Secret Update
@@ -1399,6 +1445,8 @@ Write-Host "Showing the GUI form..."
 Write-Host "GUI form closed."
 
 Write-Host "Cleaning up resources..."
+# Clear secret from memory before disposal (security)
+if ($global:NewSecretTextBox) { $global:NewSecretTextBox.Text = "" }
 # Clean up objects when the form is closed
 $global:Form.Dispose()
 if ($global:TenantComboBox) { $global:TenantComboBox.Dispose() }
@@ -1420,6 +1468,7 @@ $global:AddAtrPermissionsButton.Dispose()
 $global:CopyTicketNoteButton.Dispose()
 $global:TenantLabel.Dispose()
 if ($global:AddAppButton) { $global:AddAppButton.Dispose() }
+if ($global:UpdateAppPermissionsButton) { $global:UpdateAppPermissionsButton.Dispose() }
 if ($global:DeleteAppButton) { $global:DeleteAppButton.Dispose() }
 if ($global:SelectAppButton) { $global:SelectAppButton.Dispose() }
 Write-Host "Resources cleaned up."

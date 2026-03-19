@@ -2,14 +2,14 @@
 .SYNOPSIS
     Store and retrieve Graph app credentials (app-only) in Windows Credential Manager.
 .DESCRIPTION
-    Uses CredentialManager module. Target format: EOA-GraphApp-{tenantId}
+    Target formats: EOA-GraphApp-{tenantId} (ExchangeOnlineAnalyzer), ESR-GraphApp-{tenantId} (Entra Secret Rotate).
     UserName stores "TenantId|ClientId", Password stores ClientSecret.
-    Shared with ExchangeOnlineAnalyzer - credentials stored by either app are available to both.
 .NOTES
     Requires: Install-Module CredentialManager
 #>
 
-$script:credTargetPrefix = 'EOA-GraphApp-'
+$script:credTargetPrefixEOA = 'EOA-GraphApp-'
+$script:credTargetPrefixESR = 'ESR-GraphApp-'
 
 function Get-GraphAppCredentialFromWCM {
     <#
@@ -22,9 +22,13 @@ function Get-GraphAppCredentialFromWCM {
     #>
     param(
         [Parameter(Mandatory = $true)]
-        [string]$TenantId
+        [string]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
     )
-    $target = "$script:credTargetPrefix$TenantId"
+    $credPrefix = if ($Prefix -eq 'ESR') { $script:credTargetPrefixESR } else { $script:credTargetPrefixEOA }
+    $target = "$credPrefix$TenantId"
 
     # Try CredentialManager first (works in Windows PowerShell 5.1)
     if (Get-Module -ListAvailable -Name CredentialManager) {
@@ -66,16 +70,23 @@ function Get-WCMTenantIds {
     <#
     .SYNOPSIS
         Returns tenant IDs that have Graph app credentials stored in Windows Credential Manager.
+    .PARAMETER Prefix
+        'EOA' (ExchangeOnlineAnalyzer) or 'ESR' (Entra Secret Rotate). Omit for EOA (backward compat).
     .OUTPUTS
         [string[]] Tenant IDs, or @() if none found
     #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
+    )
+    $credPrefix = if ($Prefix -eq 'ESR') { $script:credTargetPrefixESR } else { $script:credTargetPrefixEOA }
     $tenantIds = @()
     try {
         $output = cmdkey /list 2>$null
         if ($output) {
             $text = $output | Out-String
-            $prefix = $script:credTargetPrefix
-            $pattern = [regex]::Escape($prefix) + '([a-fA-F0-9\-]{36})'
+            $pattern = [regex]::Escape($credPrefix) + '([a-fA-F0-9\-]{36})'
             $m = [regex]::Matches($text, $pattern)
             foreach ($match in $m) {
                 if ($match.Success -and $match.Groups[1].Value) {
@@ -89,8 +100,9 @@ function Get-WCMTenantIds {
 }
 
 function _Get-StoredDisplayName {
-    param([string]$TenantId)
-    $target = "${script:credTargetPrefix}${TenantId}-DisplayName"
+    param([string]$TenantId, [string]$Prefix = 'EOA')
+    $credPrefix = if ($Prefix -eq 'ESR') { $script:credTargetPrefixESR } else { $script:credTargetPrefixEOA }
+    $target = "${credPrefix}${TenantId}-DisplayName"
     try {
         if (Get-Module -ListAvailable -Name CredentialManager) {
             Import-Module CredentialManager -ErrorAction Stop
@@ -104,8 +116,8 @@ function _Get-StoredDisplayName {
 }
 
 function Get-TenantDisplayNameFromWCM {
-    param([Parameter(Mandatory = $true)][string]$TenantId)
-    $token = Get-GraphAppTokenFromWCM -TenantId $TenantId
+    param([Parameter(Mandatory = $true)][string]$TenantId, [string]$Prefix = 'EOA')
+    $token = Get-GraphAppTokenFromWCM -TenantId $TenantId -Prefix $Prefix
     if (-not $token) { return $null }
     try {
         $headers = @{ Authorization = "Bearer $token" }
@@ -121,16 +133,20 @@ function Get-WCMTenantListWithNames {
     <#
     .SYNOPSIS
         Returns WCM tenants with display names for dropdown display, sorted alphabetically by DisplayText.
+    .PARAMETER Prefix
+        'EOA' or 'ESR'. Omit for EOA.
     .OUTPUTS
-        @(@{ TenantId; DisplayName; DisplayText }, ...)
+        @(@{ TenantId; DisplayName; DisplayText; Source }, ...)
     #>
+    param([Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA')
     $result = @()
-    $ids = Get-WCMTenantIds
+    $ids = Get-WCMTenantIds -Prefix $Prefix
+    $sourceLabel = if ($Prefix -eq 'ESR') { ' (ESR)' } else { '' }
     foreach ($tid in $ids) {
-        $name = _Get-StoredDisplayName -TenantId $tid
-        if (-not $name) { $name = Get-TenantDisplayNameFromWCM -TenantId $tid }
-        $displayText = if ($name) { "$name ($tid)" } else { $tid }
-        $result += [pscustomobject]@{ TenantId = $tid; DisplayName = $name; DisplayText = $displayText }
+        $name = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
+        if (-not $name) { $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix }
+        $displayText = if ($name) { "$name$sourceLabel" } else { "$tid$sourceLabel" }
+        $result += [pscustomobject]@{ TenantId = $tid; DisplayName = $name; DisplayText = $displayText; Source = $Prefix }
     }
     return $result | Sort-Object -Property DisplayText
 }
@@ -140,8 +156,8 @@ function Get-GraphAppTokenFromWCM {
     .SYNOPSIS
         Gets an app-only access token using credentials from WCM. Returns $null if not found
     #>
-    param([Parameter(Mandatory = $true)][string]$TenantId)
-    $cred = Get-GraphAppCredentialFromWCM -TenantId $TenantId
+    param([Parameter(Mandatory = $true)][string]$TenantId, [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA')
+    $cred = Get-GraphAppCredentialFromWCM -TenantId $TenantId -Prefix $Prefix
     if (-not $cred) { return $null }
     $tokenUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
     $body = @{
@@ -207,4 +223,61 @@ public struct NativeCredential {
     }
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames
+function Save-GraphAppCredentialToWCM {
+    param(
+        [Parameter(Mandatory = $true)][string]$TenantId,
+        [Parameter(Mandatory = $true)][string]$ClientId,
+        [Parameter(Mandatory = $true)][string]$ClientSecret,
+        [Parameter(Mandatory = $false)][string]$TenantDisplayName,
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'ESR'
+    )
+    $credPrefix = if ($Prefix -eq 'ESR') { $script:credTargetPrefixESR } else { $script:credTargetPrefixEOA }
+    $target = "$credPrefix$TenantId"
+    $userName = "${TenantId}|${ClientId}"
+    if (Get-Module -ListAvailable -Name CredentialManager) {
+        try {
+            Import-Module CredentialManager -ErrorAction Stop
+            $cred = New-Object PSCredential $userName, (ConvertTo-SecureString $ClientSecret -AsPlainText -Force)
+            New-StoredCredential -Target $target -Credentials $cred -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Warning "CredentialManager failed; falling back to cmdkey. Install CredentialManager for secure storage: Install-Module CredentialManager -Scope CurrentUser"
+            Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$target", "/user:$userName", "/pass:$ClientSecret" -Wait -PassThru -WindowStyle Hidden | Out-Null
+        }
+    } else {
+        Write-Warning "CredentialManager not installed. Client secret may be visible in process argv. Install for secure storage: Install-Module CredentialManager -Scope CurrentUser"
+        Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$target", "/user:$userName", "/pass:$ClientSecret" -Wait -PassThru -WindowStyle Hidden | Out-Null
+    }
+    if ($TenantDisplayName -and -not [string]::IsNullOrWhiteSpace($TenantDisplayName)) {
+        $nameTarget = "${credPrefix}${TenantId}-DisplayName"
+        try {
+            if (Get-Module -ListAvailable -Name CredentialManager) {
+                Import-Module CredentialManager -ErrorAction Stop
+                $nameCred = New-Object PSCredential 'DisplayName', (ConvertTo-SecureString $TenantDisplayName -AsPlainText -Force)
+                New-StoredCredential -Target $nameTarget -Credentials $nameCred -ErrorAction Stop | Out-Null
+            } else {
+                Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$nameTarget", "/user:DisplayName", "/pass:$TenantDisplayName" -Wait -PassThru -WindowStyle Hidden | Out-Null
+            }
+        } catch { }
+    }
+}
+
+function Remove-GraphAppCredentialFromWCM {
+    param([Parameter(Mandatory = $true)][string]$TenantId, [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'ESR')
+    $credPrefix = if ($Prefix -eq 'ESR') { $script:credTargetPrefixESR } else { $script:credTargetPrefixEOA }
+    $target = "$credPrefix$TenantId"
+    $nameTarget = "${credPrefix}${TenantId}-DisplayName"
+    if (Get-Module -ListAvailable -Name CredentialManager) {
+        try {
+            Import-Module CredentialManager -ErrorAction Stop
+            Remove-StoredCredential -Target $target -ErrorAction SilentlyContinue
+            Remove-StoredCredential -Target $nameTarget -ErrorAction SilentlyContinue
+            return
+        } catch { }
+    }
+    try {
+        Start-Process -FilePath "cmdkey.exe" -ArgumentList "/delete:$target" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+        Start-Process -FilePath "cmdkey.exe" -ArgumentList "/delete:$nameTarget" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+    } catch { }
+}
+
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM
