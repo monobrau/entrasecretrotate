@@ -126,7 +126,7 @@ Function Install-MissingModules {
         Install-Module -Name $Modules -Scope CurrentUser -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
         Write-Host "Modules installed successfully." -ForegroundColor Green
         # Using Write-Host instead of MessageBox here to keep it simple
-        Write-Host "Required modules installed successfully. Please close this PowerShell session and open a new one to run the script again." -ForegroundColor Information
+        Write-Host "Required modules installed successfully. Please close this PowerShell session and open a new one to run the script again." -ForegroundColor Cyan
         return $true # Indicate success
     } catch {
         Write-Error "Failed to install modules. Please install them manually: Install-Module -Name $($Modules -join ', ') -Scope CurrentUser"
@@ -745,7 +745,7 @@ function Find-ExpiredSecrets {
 
         foreach ($app in $applications) {
             if ($app.PasswordCredentials) {
-                $expiredSecrets = $app.PasswordCredentials | Where-Object { $_.EndDateTime -lt $now }
+                $expiredSecrets = @($app.PasswordCredentials | Where-Object { $_.EndDateTime -lt $now })
                 if ($expiredSecrets.Count -gt 0) {
                     # Store the application object and relevant secret info
                     # Just showing the *first* expired secret's end date in the list for simplicity
@@ -888,6 +888,7 @@ function Show-SelectApplicationDialog {
     $searchTimer.Interval = 200
     $searchTimer.Add_Tick({ $searchTimer.Stop(); & $filterScript })
     $searchBox.Add_TextChanged({ $searchTimer.Stop(); $searchTimer.Start() })
+    $selForm.Add_FormClosed({ if ($searchTimer) { $searchTimer.Stop(); $searchTimer.Dispose() } })
     $btnOk = New-Object System.Windows.Forms.Button
     $btnOk.Text = "Select"
     $btnOk.Location = [System.Drawing.Point]::new(200, 370)
@@ -915,7 +916,6 @@ function Show-SelectApplicationDialog {
     $global:AddAtrPermissionsButton.Enabled = $true
     $global:NewSecretTextBox.Text = ""
     $global:DeleteSecretButton.Enabled = $false
-    $global:AddAtrPermissionsButton.Enabled = $true
     Write-StatusMessage "Selected application: $($selected.DisplayName)" -Type Info
 }
 
@@ -1087,14 +1087,19 @@ function Delete-ExpiredSecret {
     # Get the full app object to find all expired secrets
     try {
         $app = Get-MgApplication -ApplicationId $appId -ErrorAction Stop
-        $expiredSecrets = $app.PasswordCredentials | Where-Object { $_.EndDateTime -lt $now }
-        if (-not $expiredSecrets -or $expiredSecrets.Count -eq 0) {
+        $expiredSecrets = @($app.PasswordCredentials | Where-Object { $_.EndDateTime -lt $now })
+        if ($expiredSecrets.Count -eq 0) {
             [System.Windows.Forms.MessageBox]::Show("No expired secrets found for this application.", "No Expired Secrets", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
             return
         }
         # Delete the oldest expired secret
         $oldestSecret = $expiredSecrets | Sort-Object EndDateTime | Select-Object -First 1
-        $confirm = [System.Windows.Forms.MessageBox]::Show("Are you sure you want to delete the oldest expired secret for '" + $appName + "'?\nEnd Date: " + $oldestSecret.EndDateTime.ToString() + "\nKeyId: " + $oldestSecret.KeyId + "", "Confirm Delete", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        $nl = [Environment]::NewLine
+        $confirm = [System.Windows.Forms.MessageBox]::Show(
+            "Are you sure you want to delete the oldest expired secret for '$appName'?${nl}End Date: $($oldestSecret.EndDateTime)${nl}KeyId: $($oldestSecret.KeyId)",
+            "Confirm Delete",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Warning)
         if ($confirm -eq [System.Windows.Forms.DialogResult]::Yes) {
             Remove-MgApplicationPassword -ApplicationId $appId -KeyId $oldestSecret.KeyId -ErrorAction Stop
             [System.Windows.Forms.MessageBox]::Show("Expired secret deleted successfully.", "Success", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
@@ -1171,9 +1176,9 @@ function Add-BarracudaXdrPermissions {
 
         $barracudaIds = $barracudaPermissions | ForEach-Object { $_.Id }
         $existingIds = $existingResourceAccess | ForEach-Object { $_.Id }
-        $toAdd = $barracudaPermissions | Where-Object { $existingIds -notcontains $_.Id }
+        $toAdd = @($barracudaPermissions | Where-Object { $existingIds -notcontains $_.Id })
         # Permissions that exist but as delegated (Scope) - must be application (Role) for Barracuda ATR
-        $toFix = $existingResourceAccess | Where-Object { $barracudaIds -contains $_.Id -and $_.Type -eq "Scope" }
+        $toFix = @($existingResourceAccess | Where-Object { $barracudaIds -contains $_.Id -and $_.Type -eq "Scope" })
 
         # Add missing permissions or fix delegated->application (only if needed)
         if ($toAdd.Count -gt 0 -or $toFix.Count -gt 0) {
@@ -1356,12 +1361,15 @@ When secrets expire, the integration between Microsoft 365 and Barracuda XDR sto
 # Check and Install Modules
 $missing = Test-RequiredModules -Modules $requiredModules
 if ($missing.Count -gt 0) {
-    Write-Host "Required PowerShell modules are missing: $($missing -join ', '). Attempting installation..." -ForegroundColor Warning
-    # Using Write-Host instead of MessageBox here to keep it simple for this phase
-    Write-Host "Please install the missing modules manually from an elevated PowerShell session using:" -ForegroundColor Yellow
-    Write-Host "Install-Module -Name $($missing -join ', ') -Scope CurrentUser -Repository PSGallery -Force" -ForegroundColor Yellow
-    Write-Host "Then restart the script." -ForegroundColor Yellow
-    exit # Always exit if modules are missing
+    Write-Host "Required PowerShell modules are missing: $($missing -join ', ')." -ForegroundColor Yellow
+    Write-Host "Attempting installation (CurrentUser scope, PSGallery)..." -ForegroundColor Yellow
+    if (Install-MissingModules -Modules $missing) {
+        Write-Host "Installation reported success. Close this session, open a new PowerShell window, then run the script again." -ForegroundColor Cyan
+    } else {
+        Write-Host "Automatic install failed or was skipped. Install manually:" -ForegroundColor Yellow
+        Write-Host "Install-Module -Name $($missing -join ', ') -Scope CurrentUser -Repository PSGallery -Force" -ForegroundColor Yellow
+    }
+    exit
 }
 
 # Import Modules (if found)

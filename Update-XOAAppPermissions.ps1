@@ -35,7 +35,9 @@ try {
 $tenantId = (Get-MgContext).TenantId
 Write-Host "Connected. Tenant: $tenantId" -ForegroundColor Green
 
-$app = Get-MgApplication -Filter "displayName eq '$appDisplayName'" -ErrorAction SilentlyContinue | Select-Object -First 1
+# OData: escape single quotes in display name for filter safety
+$escapedDisplayName = $appDisplayName -replace "'", "''"
+$app = Get-MgApplication -Filter "displayName eq '$escapedDisplayName'" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $app) {
     Write-Host "`nApp '$appDisplayName' not found. Use Add App (XOA) to create it first, or set `$appDisplayName to match your app." -ForegroundColor Yellow
     exit 1
@@ -54,7 +56,7 @@ if ($msGraphEntry -and $msGraphEntry.ResourceAccess) {
 }
 
 $existingIds = $existingResourceAccess | ForEach-Object { $_.Id }
-$toAdd = $permsToAdd | Where-Object { $existingIds -notcontains $_.Id }
+$toAdd = @($permsToAdd | Where-Object { $existingIds -notcontains $_.Id })
 
 if ($toAdd.Count -eq 0) {
     Write-Host "`nApp already has Application.ReadWrite.All and AppRoleAssignment.ReadWrite.All." -ForegroundColor Green

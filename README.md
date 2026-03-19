@@ -36,6 +36,8 @@ Install-Module CredentialManager -Scope CurrentUser
 
 ## Run
 
+If Graph modules are missing, the script **attempts** `Install-Module` (CurrentUser / PSGallery), then exits—you must open a **new** PowerShell window and run again.
+
 ```powershell
 .\entrasecretrotate.ps1
 ```
