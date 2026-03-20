@@ -1,7 +1,8 @@
 # Requires the Microsoft.Graph.Authentication and Microsoft.Graph.Applications modules
 # Install with: Install-Module Microsoft.Graph.Authentication, Microsoft.Graph.Applications -Scope CurrentUser
 
-Write-Host "Script started."
+$script:Version = "1.0.0"
+Write-Host "Script started. Version $script:Version"
 
 # --- Configuration ---
 # Import specific sub-modules instead of meta-module to avoid dependency issues
@@ -71,8 +72,9 @@ $GUI_BUTTON_WIDTH = 110
 $GUI_BUTTON_WIDTH_CONNECT = 75   # Narrower for Connect/Disconnect to fit row
 $GUI_BUTTON_WIDTH_WIDE = 180
 $GUI_LABEL_HEIGHT = 20
-$GUI_FORM_WIDTH = 920
+$GUI_FORM_WIDTH = 600
 $GUI_FORM_HEIGHT = 600
+$EXPIRED_SECRETS_LISTBOX_WIDTH = 380   # Cap listbox width (was full form width)
 
 # --- Function Definitions for Module Management ---
 
@@ -193,7 +195,7 @@ function Setup-GUI {
     $tenantComboX = [int]($GUI_MARGIN + 50)
     $global:TenantComboBox = New-Object System.Windows.Forms.ComboBox
     $global:TenantComboBox.Location = [System.Drawing.Point]::new($tenantComboX, $row1Y)
-    $global:TenantComboBox.Size = [System.Drawing.Size]::new(220, 25)
+    $global:TenantComboBox.Size = [System.Drawing.Size]::new(140, 25)
     $global:TenantComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
     $global:TenantComboBox.TabIndex = 0
     # Placeholder until Shown: avoids blocking ShowDialog on Graph token calls per WCM tenant
@@ -206,7 +208,7 @@ function Setup-GUI {
     # Refresh tenants button (reload WCM app sessions after adding via ExchangeOnlineAnalyzer)
     $refreshTenantsBtn = New-Object System.Windows.Forms.Button
     $refreshTenantsBtn.Text = "↻"
-    $refreshTenantsBtn.Location = [System.Drawing.Point]::new($tenantComboX + 222, $row1Y)
+    $refreshTenantsBtn.Location = [System.Drawing.Point]::new($tenantComboX + 142, $row1Y)
     $refreshTenantsBtn.Size = [System.Drawing.Size]::new(28, [int]$GUI_BUTTON_HEIGHT)
     $refreshTip = New-Object System.Windows.Forms.ToolTip
     $refreshTip.SetToolTip($refreshTenantsBtn, "Reload tenants from Windows Credential Manager (fast; no Graph lookup per tenant).")
@@ -214,12 +216,14 @@ function Setup-GUI {
     $global:Form.Controls.Add($refreshTenantsBtn)
 
     # Connect Button
-    $connectX = [int]($tenantComboX + 220 + 28 + $GUI_MARGIN)
+    $connectX = [int]($tenantComboX + 140 + 28 + $GUI_MARGIN)
     $global:ConnectButton.Location = [System.Drawing.Point]::new($connectX, $row1Y)
     $global:ConnectButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH_CONNECT, [int]$GUI_BUTTON_HEIGHT)
     $global:ConnectButton.Text = "Connect"
     $global:ConnectButton.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)   # Green
     $global:ConnectButton.ForeColor = [System.Drawing.Color]::White
+    $mainTip = New-Object System.Windows.Forms.ToolTip
+    $mainTip.SetToolTip($global:ConnectButton, "Connect to Microsoft Graph (interactive or saved app)")
     $global:Form.Controls.Add($global:ConnectButton)
 
     # Disconnect Button
@@ -230,51 +234,17 @@ function Setup-GUI {
     $global:DisconnectButton.BackColor = [System.Drawing.Color]::FromArgb(198, 40, 40)   # Red
     $global:DisconnectButton.ForeColor = [System.Drawing.Color]::White
     $global:DisconnectButton.Enabled = $false # Disabled initially
+    $mainTip.SetToolTip($global:DisconnectButton, "Disconnect from Microsoft Graph")
     $global:Form.Controls.Add($global:DisconnectButton)
 
-    # Add App button (create XOA app registration, save to WCM)
-    $addAppX = [int]($disconnectX + $GUI_BUTTON_WIDTH_CONNECT + $GUI_MARGIN)
-    $global:AddAppButton = New-Object System.Windows.Forms.Button
-    $global:AddAppButton.Location = [System.Drawing.Point]::new($addAppX, $row1Y)
-    $global:AddAppButton.Size = [System.Drawing.Size]::new(90, [int]$GUI_BUTTON_HEIGHT)
-    $global:AddAppButton.Text = "Add App"
-    $global:Form.Controls.Add($global:AddAppButton)
-
-    # Update App Permissions button (add Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All to existing XOA app)
-    $updateAppX = $addAppX + 90 + $GUI_SPACING
-    $global:UpdateAppPermissionsButton = New-Object System.Windows.Forms.Button
-    $global:UpdateAppPermissionsButton.Location = New-Object System.Drawing.Point($updateAppX, $row1Y)
-    $global:UpdateAppPermissionsButton.Size = New-Object System.Drawing.Size(120, $GUI_BUTTON_HEIGHT)
-    $global:UpdateAppPermissionsButton.Text = "Update App Perms"
-    $global:Form.Controls.Add($global:UpdateAppPermissionsButton)
-
-    # Delete App button (remove XOA app registration per tenant)
-    $deleteAppX = [int]($updateAppX + 120 + $GUI_SPACING)
-    $global:DeleteAppButton = New-Object System.Windows.Forms.Button
-    $global:DeleteAppButton.Location = [System.Drawing.Point]::new($deleteAppX, $row1Y)
-    $global:DeleteAppButton.Size = [System.Drawing.Size]::new(90, [int]$GUI_BUTTON_HEIGHT)
-    $global:DeleteAppButton.Text = "Delete App"
-    $global:DeleteAppButton.BackColor = [System.Drawing.Color]::FromArgb(198, 40, 40)
-    $global:DeleteAppButton.ForeColor = [System.Drawing.Color]::White
-    $global:Form.Controls.Add($global:DeleteAppButton)
-
-    # Clear local WCM only (does not delete Entra app); lists EOA + ESR + orphan targets
-    $clearLocalX = [int]($deleteAppX + 90 + 6)
-    $global:ClearLocalWcmButton = New-Object System.Windows.Forms.Button
-    $global:ClearLocalWcmButton.Location = [System.Drawing.Point]::new($clearLocalX, $row1Y)
-    $global:ClearLocalWcmButton.Size = [System.Drawing.Size]::new(108, [int]$GUI_BUTTON_HEIGHT)
-    $global:ClearLocalWcmButton.Text = "Clear local"
-    $clearLocalTip = New-Object System.Windows.Forms.ToolTip
-    $clearLocalTip.SetToolTip($global:ClearLocalWcmButton, "Remove stored Graph credentials from this PC only (Windows Credential Manager). Does not delete apps in Entra. Shows tenant ID when name is unknown; includes stray WCM targets.")
-    $global:Form.Controls.Add($global:ClearLocalWcmButton)
-
-    # Copy Ticket Note Button
-    $copyTicketX = [int]($clearLocalX + 108 + $GUI_MARGIN)
-    $global:CopyTicketNoteButton.Location = [System.Drawing.Point]::new($copyTicketX, $row1Y)
-    $global:CopyTicketNoteButton.Size = [System.Drawing.Size]::new(150, [int]$GUI_BUTTON_HEIGHT)
-    $global:CopyTicketNoteButton.Text = "Copy Ticket Note"
-    $global:CopyTicketNoteButton.Enabled = $true # Always enabled
-    $global:Form.Controls.Add($global:CopyTicketNoteButton)
+    # Graph App button (opens popup for Add/Update/Delete/Clear)
+    $graphAppX = [int]($disconnectX + $GUI_BUTTON_WIDTH_CONNECT + $GUI_MARGIN)
+    $global:GraphAppButton = New-Object System.Windows.Forms.Button
+    $global:GraphAppButton.Location = [System.Drawing.Point]::new($graphAppX, $row1Y)
+    $global:GraphAppButton.Size = [System.Drawing.Size]::new(90, [int]$GUI_BUTTON_HEIGHT)
+    $global:GraphAppButton.Text = "Graph App"
+    $mainTip.SetToolTip($global:GraphAppButton, "App creation, permissions, and credential management")
+    $global:Form.Controls.Add($global:GraphAppButton)
 
     # Status Label
     $statusWidth = [int]($GUI_FORM_WIDTH - (2 * $GUI_MARGIN))
@@ -288,6 +258,7 @@ function Setup-GUI {
     $global:FindSecretsButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH_WIDE, [int]$GUI_BUTTON_HEIGHT)
     $global:FindSecretsButton.Text = "Find Expired Secrets"
     $global:FindSecretsButton.Enabled = $false # Disabled initially
+    $mainTip.SetToolTip($global:FindSecretsButton, "Find applications with expired secrets in the connected tenant")
     $global:Form.Controls.Add($global:FindSecretsButton)
 
     # Select Application button (add secret without finding expired first)
@@ -297,6 +268,7 @@ function Setup-GUI {
     $global:SelectAppButton.Size = [System.Drawing.Size]::new(140, [int]$GUI_BUTTON_HEIGHT)
     $global:SelectAppButton.Text = "Select Application"
     $global:SelectAppButton.Enabled = $false # Disabled initially
+    $mainTip.SetToolTip($global:SelectAppButton, "Browse and select any application to add a new secret (no expired find required)")
     $global:Form.Controls.Add($global:SelectAppButton)
 
     # Expired Secrets Label
@@ -305,8 +277,8 @@ function Setup-GUI {
     $global:ExpiredSecretsLabel.Text = "Applications with Expired Secrets:"
     $global:Form.Controls.Add($global:ExpiredSecretsLabel)
 
-    # Expired Secrets ListBox
-    $listBoxWidth = [int]($GUI_FORM_WIDTH - (2 * $GUI_MARGIN))
+    # Expired Secrets ListBox (capped width, form can be wider)
+    $listBoxWidth = [Math]::Min([int]($GUI_FORM_WIDTH - (2 * $GUI_MARGIN)), [int]$EXPIRED_SECRETS_LISTBOX_WIDTH)
     $global:ExpiredSecretsListBox.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $row5Y)
     $global:ExpiredSecretsListBox.Size = [System.Drawing.Size]::new($listBoxWidth, $listBoxHeight)
     $global:ExpiredSecretsListBox.Enabled = $false # Disabled initially
@@ -321,13 +293,13 @@ function Setup-GUI {
     # Selected App Name Label
     $selectedAppX = [int]($GUI_MARGIN + 160)
     $global:SelectedAppNameLabel.Location = [System.Drawing.Point]::new($selectedAppX, $row6Y)
-    $global:SelectedAppNameLabel.Size = [System.Drawing.Size]::new(400, [int]$GUI_LABEL_HEIGHT)
+    $global:SelectedAppNameLabel.Size = [System.Drawing.Size]::new([int]($GUI_FORM_WIDTH - $selectedAppX - $GUI_MARGIN), [int]$GUI_LABEL_HEIGHT)
     $global:SelectedAppNameLabel.Text = ""
     $global:Form.Controls.Add($global:SelectedAppNameLabel)
 
     # Selected End Date Label
     $global:SelectedEndDateLabel.Location = [System.Drawing.Point]::new($selectedAppX, $row7Y)
-    $global:SelectedEndDateLabel.Size = [System.Drawing.Size]::new(400, [int]$GUI_LABEL_HEIGHT)
+    $global:SelectedEndDateLabel.Size = [System.Drawing.Size]::new([int]($GUI_FORM_WIDTH - $selectedAppX - $GUI_MARGIN), [int]$GUI_LABEL_HEIGHT)
     $global:SelectedEndDateLabel.Text = ""
     $global:Form.Controls.Add($global:SelectedEndDateLabel)
 
@@ -336,6 +308,7 @@ function Setup-GUI {
     $global:GenerateSecretButton.Size = [System.Drawing.Size]::new(150, [int]$GUI_BUTTON_HEIGHT)
     $global:GenerateSecretButton.Text = "Generate New Secret"
     $global:GenerateSecretButton.Enabled = $false # Disabled initially
+    $mainTip.SetToolTip($global:GenerateSecretButton, "Generate a new secret for the selected application (shown once)")
     $global:Form.Controls.Add($global:GenerateSecretButton)
 
     # Delete Expired Secret Button
@@ -345,6 +318,7 @@ function Setup-GUI {
     $global:DeleteSecretButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH_WIDE, [int]$GUI_BUTTON_HEIGHT)
     $global:DeleteSecretButton.Text = "Delete Expired Secret"
     $global:DeleteSecretButton.Enabled = $false
+    $mainTip.SetToolTip($global:DeleteSecretButton, "Delete the oldest expired secret for the selected application")
     $global:Form.Controls.Add($global:DeleteSecretButton)
 
     # Add ATR Permissions Button (Barracuda XDR automatic remediation)
@@ -355,6 +329,7 @@ function Setup-GUI {
     $global:AddAtrPermissionsButton.Text = "Add ATR Permissions"
     $global:AddAtrPermissionsButton.Enabled = $false
     $global:AddAtrPermissionsButton.ForeColor = [System.Drawing.Color]::DarkBlue
+    $mainTip.SetToolTip($global:AddAtrPermissionsButton, "Add Barracuda XDR ATR permissions (User.ReadWrite.All, User.EnableDisableAccount.All, etc.)")
     $global:Form.Controls.Add($global:AddAtrPermissionsButton)
 
     # New Secret Label
@@ -366,24 +341,52 @@ function Setup-GUI {
     # New Secret TextBox
     $secretTextX = [int]($GUI_MARGIN + 110)
     $global:NewSecretTextBox.Location = [System.Drawing.Point]::new($secretTextX, [int]($row9Y - 3))
-    $global:NewSecretTextBox.Size = [System.Drawing.Size]::new(450, 25)
+    $global:NewSecretTextBox.Size = [System.Drawing.Size]::new([int]($GUI_FORM_WIDTH - $secretTextX - 130), 25)
     $global:NewSecretTextBox.ReadOnly = $true # Make it read-only
     $global:Form.Controls.Add($global:NewSecretTextBox)
 
     # Copy Secret Button
-    $copySecretButtonX = [int]($secretTextX + 450 + $GUI_MARGIN)
+    $copySecretButtonX = [int]($secretTextX + ($GUI_FORM_WIDTH - $secretTextX - 130) + $GUI_MARGIN)
     $global:CopySecretButton.Location = [System.Drawing.Point]::new($copySecretButtonX, [int]($row9Y - 3))
     $global:CopySecretButton.Size = [System.Drawing.Size]::new(120, 30)
     $global:CopySecretButton.Text = "Copy Secret"
     $global:CopySecretButton.Enabled = $false # Disabled initially
+    $mainTip.SetToolTip($global:CopySecretButton, "Copy the generated secret to clipboard")
     $global:Form.Controls.Add($global:CopySecretButton)
 
-    # Tenant Label (at bottom)
-    $global:TenantLabel.Location = [System.Drawing.Point]::new(10, 540)
-    $global:TenantLabel.Size = [System.Drawing.Size]::new(820, 20)
+    # Bottom row: Tenant label (left), Ticket, About, Help (right)
+    $rowBottomY = 518
+    $bottomBtnW = 60
+    $bottomBtnH = 24
+    $bottomBtnSpacing = 6
+    $bottomRightTotal = $bottomBtnW * 3 + $bottomBtnSpacing * 2 + $GUI_MARGIN
+    $tenantLabelW = [int]($GUI_FORM_WIDTH - 2 * $GUI_MARGIN - $bottomRightTotal)
+    $global:TenantLabel.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $rowBottomY)
+    $global:TenantLabel.Size = [System.Drawing.Size]::new($tenantLabelW, $bottomBtnH)
     $global:TenantLabel.Text = "Tenant: Not Connected"
     $global:TenantLabel.ForeColor = [System.Drawing.Color]::Gray
     $global:Form.Controls.Add($global:TenantLabel)
+    $ticketBtnX = [int]($GUI_MARGIN + $tenantLabelW + $bottomBtnSpacing)
+    $global:CopyTicketNoteButton.Location = [System.Drawing.Point]::new($ticketBtnX, [int]($rowBottomY - 2))
+    $global:CopyTicketNoteButton.Size = [System.Drawing.Size]::new($bottomBtnW, $bottomBtnH)
+    $global:CopyTicketNoteButton.Text = "Ticket"
+    $mainTip.SetToolTip($global:CopyTicketNoteButton, "Copy ticket note template to clipboard")
+    $global:CopyTicketNoteButton.Enabled = $true
+    $global:Form.Controls.Add($global:CopyTicketNoteButton)
+    $aboutBtnX = [int]($ticketBtnX + $bottomBtnW + $bottomBtnSpacing)
+    $global:AboutButton = New-Object System.Windows.Forms.Button
+    $global:AboutButton.Location = [System.Drawing.Point]::new($aboutBtnX, [int]($rowBottomY - 2))
+    $global:AboutButton.Size = [System.Drawing.Size]::new($bottomBtnW, $bottomBtnH)
+    $global:AboutButton.Text = "About"
+    $mainTip.SetToolTip($global:AboutButton, "About this application")
+    $global:Form.Controls.Add($global:AboutButton)
+    $helpBtnX = [int]($aboutBtnX + $bottomBtnW + $bottomBtnSpacing)
+    $global:HelpButton = New-Object System.Windows.Forms.Button
+    $global:HelpButton.Location = [System.Drawing.Point]::new($helpBtnX, [int]($rowBottomY - 2))
+    $global:HelpButton.Size = [System.Drawing.Size]::new($bottomBtnW, $bottomBtnH)
+    $global:HelpButton.Text = "Help"
+    $mainTip.SetToolTip($global:HelpButton, "Usage instructions")
+    $global:Form.Controls.Add($global:HelpButton)
 
     # --- Event Handlers ---
 
@@ -398,9 +401,9 @@ function Setup-GUI {
     })
 
     # Copy Ticket Note Button Click
-    $global:CopyTicketNoteButton.Add_Click({
-        Copy-TicketNoteTemplate
-    })
+    $global:CopyTicketNoteButton.Add_Click({ Copy-TicketNoteTemplate })
+    $global:AboutButton.Add_Click({ Show-AboutDialog })
+    $global:HelpButton.Add_Click({ Show-HelpDialog })
 
     # Find Secrets Button Click
     $global:FindSecretsButton.Add_Click({
@@ -427,11 +430,8 @@ function Setup-GUI {
     # Add ATR Permissions Button Click
     $global:AddAtrPermissionsButton.Add_Click({ Add-BarracudaXdrPermissions })
 
-    # Add App / Update App Perms / Delete App button clicks
-    $global:AddAppButton.Add_Click({ Add-XOAAppRegistration })
-    $global:UpdateAppPermissionsButton.Add_Click({ Update-XOAAppPermissions })
-    $global:DeleteAppButton.Add_Click({ Delete-XOAAppRegistration })
-    $global:ClearLocalWcmButton.Add_Click({ Clear-LocalGraphWcmCredentialsOnly })
+    # Graph App button (opens popup with Add/Update/Delete/Clear)
+    $global:GraphAppButton.Add_Click({ Show-GraphAppManagementDialog })
 
     # Copy Secret Button Click
     $global:CopySecretButton.Add_Click({
@@ -463,6 +463,24 @@ function Setup-GUI {
 
 
 # --- Logic Functions ---
+
+function Show-AboutDialog {
+    $msg = "Entra ID Secret Management`n`nVersion $script:Version`n`nPowerShell GUI for managing expired application secrets in Microsoft Entra ID.`n`nFeatures: Connect via Graph, find expired secrets, generate secrets, add Barracuda XDR ATR permissions, copy ticket note template."
+    [System.Windows.Forms.MessageBox]::Show($msg, "About", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+}
+
+function Show-HelpDialog {
+    $help = @"
+1. Choose tenant: Interactive (browser) or saved app
+2. Click Connect
+3. Find Expired Secrets or Select Application
+4. Select an app, then Generate New Secret or Add ATR Permissions
+5. Copy the secret immediately—shown only once
+
+For Add ATR with saved app: ensure the app has Application.ReadWrite.All and AppRoleAssignment.ReadWrite.All (use Graph App > Update App Perms).
+"@
+    [System.Windows.Forms.MessageBox]::Show($help, "Help", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+}
 
 # Deferred Graph /organization lookup so the form appears before per-tenant token calls (one tenant per timer tick)
 $script:tenantDisplayNameRefreshTimer = $null
@@ -618,6 +636,75 @@ function Update-TenantComboBox {
     $global:TenantComboBox.ValueMember = "TenantId"
     Sync-TenantComboAlphabeticalOrder
     Start-TenantComboGraphNameRefresh
+}
+
+function Show-GraphAppManagementDialog {
+    <#
+    .SYNOPSIS
+        Popup with Add App, Update App Perms, Delete App, Clear local.
+    #>
+    $dlg = New-Object System.Windows.Forms.Form
+    $dlg.Text = "Graph App Management"
+    $dlg.Size = [System.Drawing.Size]::new(320, 260)
+    $dlg.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $dlg.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $dlg.MaximizeBox = $false
+    $dlg.MinimizeBox = $false
+
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "App creation, permissions, and credential management:"
+    $lbl.Location = [System.Drawing.Point]::new(10, 10)
+    $lbl.Size = [System.Drawing.Size]::new(280, 20)
+    $lbl.AutoSize = $false
+    $dlg.Controls.Add($lbl)
+
+    $dlgTip = New-Object System.Windows.Forms.ToolTip
+    $btnAdd = New-Object System.Windows.Forms.Button
+    $btnAdd.Text = "Add App"
+    $btnAdd.Location = [System.Drawing.Point]::new(20, 40)
+    $btnAdd.Size = [System.Drawing.Size]::new(260, 28)
+    $dlgTip.SetToolTip($btnAdd, "Create XOA app registration and save to Windows Credential Manager")
+    $btnAdd.Add_Click({ $dlg.Hide(); Add-XOAAppRegistration; $dlg.Close() })
+    $dlg.Controls.Add($btnAdd)
+
+    $btnUpdate = New-Object System.Windows.Forms.Button
+    $btnUpdate.Text = "Update App Perms"
+    $btnUpdate.Location = [System.Drawing.Point]::new(20, 76)
+    $btnUpdate.Size = [System.Drawing.Size]::new(260, 28)
+    $dlgTip.SetToolTip($btnUpdate, "Add Application.ReadWrite.All and AppRoleAssignment.ReadWrite.All to existing XOA app (required for Add ATR with app auth)")
+    $btnUpdate.Add_Click({ $dlg.Hide(); Update-XOAAppPermissions; $dlg.Close() })
+    $dlg.Controls.Add($btnUpdate)
+
+    $btnDelete = New-Object System.Windows.Forms.Button
+    $btnDelete.Text = "Delete App"
+    $btnDelete.Location = [System.Drawing.Point]::new(20, 112)
+    $btnDelete.Size = [System.Drawing.Size]::new(260, 28)
+    $btnDelete.BackColor = [System.Drawing.Color]::FromArgb(198, 40, 40)
+    $btnDelete.ForeColor = [System.Drawing.Color]::White
+    $dlgTip.SetToolTip($btnDelete, "Remove app registration from Entra and stored credentials from WCM")
+    $btnDelete.Add_Click({ $dlg.Hide(); Delete-XOAAppRegistration; $dlg.Close() })
+    $dlg.Controls.Add($btnDelete)
+
+    $btnClear = New-Object System.Windows.Forms.Button
+    $btnClear.Text = "Clear local"
+    $btnClear.Location = [System.Drawing.Point]::new(20, 148)
+    $btnClear.Size = [System.Drawing.Size]::new(260, 28)
+    $dlgTip.SetToolTip($btnClear, "Remove stored Graph credentials from this PC only (Windows Credential Manager). Does not delete apps in Entra.")
+    $btnClear.Add_Click({ $dlg.Hide(); Clear-LocalGraphWcmCredentialsOnly; $dlg.Close() })
+    $dlg.Controls.Add($btnClear)
+
+    $btnClose = New-Object System.Windows.Forms.Button
+    $btnClose.Text = "Close"
+    $btnClose.Location = [System.Drawing.Point]::new(110, 186)
+    $btnClose.Size = [System.Drawing.Size]::new(80, 28)
+    $btnClose.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $dlgTip.SetToolTip($btnClose, "Close this dialog")
+    $dlg.AcceptButton = $btnClose
+    $dlg.CancelButton = $btnClose
+    $dlg.Controls.Add($btnClose)
+
+    $dlg.ShowDialog($global:Form) | Out-Null
+    $dlg.Dispose()
 }
 
 function Update-XOAAppPermissions {
@@ -1662,9 +1749,9 @@ $global:DeleteSecretButton.Dispose()
 $global:AddAtrPermissionsButton.Dispose()
 $global:CopyTicketNoteButton.Dispose()
 $global:TenantLabel.Dispose()
-if ($global:AddAppButton) { $global:AddAppButton.Dispose() }
-if ($global:UpdateAppPermissionsButton) { $global:UpdateAppPermissionsButton.Dispose() }
-if ($global:DeleteAppButton) { $global:DeleteAppButton.Dispose() }
+if ($global:AboutButton) { $global:AboutButton.Dispose() }
+if ($global:HelpButton) { $global:HelpButton.Dispose() }
+if ($global:GraphAppButton) { $global:GraphAppButton.Dispose() }
 if ($global:SelectAppButton) { $global:SelectAppButton.Dispose() }
 Write-Host "Resources cleaned up."
 
