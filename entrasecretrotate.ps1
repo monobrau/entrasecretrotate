@@ -1,7 +1,7 @@
 # Requires the Microsoft.Graph.Authentication and Microsoft.Graph.Applications modules
 # Install with: Install-Module Microsoft.Graph.Authentication, Microsoft.Graph.Applications -Scope CurrentUser
 
-$script:Version = "1.0.0"
+$script:Version = "1.1.0"
 Write-Host "Script started. Version $script:Version"
 
 # --- Configuration ---
@@ -75,6 +75,7 @@ $GUI_LABEL_HEIGHT = 20
 $GUI_FORM_WIDTH = 600
 $GUI_FORM_HEIGHT = 600
 $EXPIRED_SECRETS_LISTBOX_WIDTH = 380   # Cap listbox width (was full form width)
+$COPY_SECRET_BUTTON_WIDTH = 95
 
 # --- Function Definitions for Module Management ---
 
@@ -185,6 +186,7 @@ function Setup-GUI {
     $row8Y = [int]($row7Y + $GUI_LABEL_HEIGHT + $GUI_MARGIN)
     $row9Y = [int]($row8Y + $GUI_BUTTON_HEIGHT + $GUI_MARGIN)
 
+    $mainTip = New-Object System.Windows.Forms.ToolTip
     # Tenant selector (Graph app sessions from WCM, shared with ExchangeOnlineAnalyzer)
     $tenantLabel = New-Object System.Windows.Forms.Label
     $tenantLabel.Text = "Tenant:"
@@ -203,6 +205,7 @@ function Setup-GUI {
     $global:TenantComboBox.DisplayMember = "DisplayText"
     $global:TenantComboBox.ValueMember = "TenantId"
     $global:TenantComboBox.SelectedIndex = 0
+    $mainTip.SetToolTip($global:TenantComboBox, "Interactive: sign in with browser (Global Admin works). Saved app: use credentials from Windows Credential Manager.")
     $global:Form.Controls.Add($global:TenantComboBox)
 
     # Refresh tenants button (reload WCM app sessions after adding via ExchangeOnlineAnalyzer)
@@ -222,7 +225,6 @@ function Setup-GUI {
     $global:ConnectButton.Text = "Connect"
     $global:ConnectButton.BackColor = [System.Drawing.Color]::FromArgb(40, 167, 69)   # Green
     $global:ConnectButton.ForeColor = [System.Drawing.Color]::White
-    $mainTip = New-Object System.Windows.Forms.ToolTip
     $mainTip.SetToolTip($global:ConnectButton, "Connect to Microsoft Graph (interactive or saved app)")
     $global:Form.Controls.Add($global:ConnectButton)
 
@@ -242,8 +244,8 @@ function Setup-GUI {
     $global:GraphAppButton = New-Object System.Windows.Forms.Button
     $global:GraphAppButton.Location = [System.Drawing.Point]::new($graphAppX, $row1Y)
     $global:GraphAppButton.Size = [System.Drawing.Size]::new(90, [int]$GUI_BUTTON_HEIGHT)
-    $global:GraphAppButton.Text = "Graph App"
-    $mainTip.SetToolTip($global:GraphAppButton, "App creation, permissions, and credential management")
+    $global:GraphAppButton.Text = "Manage App"
+    $mainTip.SetToolTip($global:GraphAppButton, "Add app, update permissions, delete app, or clear local credentials from Windows Credential Manager")
     $global:Form.Controls.Add($global:GraphAppButton)
 
     # Status Label
@@ -258,7 +260,7 @@ function Setup-GUI {
     $global:FindSecretsButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH_WIDE, [int]$GUI_BUTTON_HEIGHT)
     $global:FindSecretsButton.Text = "Find Expired Secrets"
     $global:FindSecretsButton.Enabled = $false # Disabled initially
-    $mainTip.SetToolTip($global:FindSecretsButton, "Find applications with expired secrets in the connected tenant")
+    $mainTip.SetToolTip($global:FindSecretsButton, "Scan the tenant for apps that have expired client secrets")
     $global:Form.Controls.Add($global:FindSecretsButton)
 
     # Select Application button (add secret without finding expired first)
@@ -268,7 +270,7 @@ function Setup-GUI {
     $global:SelectAppButton.Size = [System.Drawing.Size]::new(140, [int]$GUI_BUTTON_HEIGHT)
     $global:SelectAppButton.Text = "Select Application"
     $global:SelectAppButton.Enabled = $false # Disabled initially
-    $mainTip.SetToolTip($global:SelectAppButton, "Browse and select any application to add a new secret (no expired find required)")
+    $mainTip.SetToolTip($global:SelectAppButton, "Pick any app to add a secret—useful when the app has no expired secrets or for Add ATR Permissions")
     $global:Form.Controls.Add($global:SelectAppButton)
 
     # Expired Secrets Label
@@ -318,7 +320,7 @@ function Setup-GUI {
     $global:DeleteSecretButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH_WIDE, [int]$GUI_BUTTON_HEIGHT)
     $global:DeleteSecretButton.Text = "Delete Expired Secret"
     $global:DeleteSecretButton.Enabled = $false
-    $mainTip.SetToolTip($global:DeleteSecretButton, "Delete the oldest expired secret for the selected application")
+    $mainTip.SetToolTip($global:DeleteSecretButton, "Remove the oldest expired secret from the selected app (cleanup only; generate a new one separately)")
     $global:Form.Controls.Add($global:DeleteSecretButton)
 
     # Add ATR Permissions Button (Barracuda XDR automatic remediation)
@@ -329,26 +331,28 @@ function Setup-GUI {
     $global:AddAtrPermissionsButton.Text = "Add ATR Permissions"
     $global:AddAtrPermissionsButton.Enabled = $false
     $global:AddAtrPermissionsButton.ForeColor = [System.Drawing.Color]::DarkBlue
-    $mainTip.SetToolTip($global:AddAtrPermissionsButton, "Add Barracuda XDR ATR permissions (User.ReadWrite.All, User.EnableDisableAccount.All, etc.)")
+    $mainTip.SetToolTip($global:AddAtrPermissionsButton, "Add Barracuda XDR Automatic Threat Response permissions for user remediation (User.ReadWrite.All, User.EnableDisableAccount.All)")
     $global:Form.Controls.Add($global:AddAtrPermissionsButton)
 
-    # New Secret Label
+    # New Secret Label (shifted left to keep Copy Secret within form)
+    $newSecretLabelW = 75
+    $secretTextX = [int]($GUI_MARGIN + $newSecretLabelW + $GUI_SPACING)
+    $newSecretTextBoxW = 375
     $global:NewSecretLabel.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $row9Y)
-    $global:NewSecretLabel.Size = [System.Drawing.Size]::new(100, [int]$GUI_LABEL_HEIGHT)
+    $global:NewSecretLabel.Size = [System.Drawing.Size]::new($newSecretLabelW, [int]$GUI_LABEL_HEIGHT)
     $global:NewSecretLabel.Text = "New Secret:"
     $global:Form.Controls.Add($global:NewSecretLabel)
 
     # New Secret TextBox
-    $secretTextX = [int]($GUI_MARGIN + 110)
     $global:NewSecretTextBox.Location = [System.Drawing.Point]::new($secretTextX, [int]($row9Y - 3))
-    $global:NewSecretTextBox.Size = [System.Drawing.Size]::new([int]($GUI_FORM_WIDTH - $secretTextX - 130), 25)
+    $global:NewSecretTextBox.Size = [System.Drawing.Size]::new($newSecretTextBoxW, 25)
     $global:NewSecretTextBox.ReadOnly = $true # Make it read-only
     $global:Form.Controls.Add($global:NewSecretTextBox)
 
     # Copy Secret Button
-    $copySecretButtonX = [int]($secretTextX + ($GUI_FORM_WIDTH - $secretTextX - 130) + $GUI_MARGIN)
+    $copySecretButtonX = [int]($secretTextX + $newSecretTextBoxW + $GUI_MARGIN)
     $global:CopySecretButton.Location = [System.Drawing.Point]::new($copySecretButtonX, [int]($row9Y - 3))
-    $global:CopySecretButton.Size = [System.Drawing.Size]::new(120, 30)
+    $global:CopySecretButton.Size = [System.Drawing.Size]::new([int]$COPY_SECRET_BUTTON_WIDTH, 30)
     $global:CopySecretButton.Text = "Copy Secret"
     $global:CopySecretButton.Enabled = $false # Disabled initially
     $mainTip.SetToolTip($global:CopySecretButton, "Copy the generated secret to clipboard")
@@ -359,7 +363,8 @@ function Setup-GUI {
     $bottomBtnW = 60
     $bottomBtnH = 24
     $bottomBtnSpacing = 6
-    $bottomRightTotal = $bottomBtnW * 3 + $bottomBtnSpacing * 2 + $GUI_MARGIN
+    $bottomBtnLeftOffset = 24   # Move buttons left (more space reserved for buttons)
+    $bottomRightTotal = $bottomBtnW * 3 + $bottomBtnSpacing * 2 + $GUI_MARGIN + $bottomBtnLeftOffset
     $tenantLabelW = [int]($GUI_FORM_WIDTH - 2 * $GUI_MARGIN - $bottomRightTotal)
     $global:TenantLabel.Location = [System.Drawing.Point]::new([int]$GUI_MARGIN, $rowBottomY)
     $global:TenantLabel.Size = [System.Drawing.Size]::new($tenantLabelW, $bottomBtnH)
@@ -370,7 +375,7 @@ function Setup-GUI {
     $global:CopyTicketNoteButton.Location = [System.Drawing.Point]::new($ticketBtnX, [int]($rowBottomY - 2))
     $global:CopyTicketNoteButton.Size = [System.Drawing.Size]::new($bottomBtnW, $bottomBtnH)
     $global:CopyTicketNoteButton.Text = "Ticket"
-    $mainTip.SetToolTip($global:CopyTicketNoteButton, "Copy ticket note template to clipboard")
+    $mainTip.SetToolTip($global:CopyTicketNoteButton, "Copy ConnectWise ticket note template to clipboard (for documenting secret rotation)")
     $global:CopyTicketNoteButton.Enabled = $true
     $global:Form.Controls.Add($global:CopyTicketNoteButton)
     $aboutBtnX = [int]($ticketBtnX + $bottomBtnW + $bottomBtnSpacing)
