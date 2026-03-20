@@ -71,7 +71,7 @@ $GUI_BUTTON_WIDTH = 110
 $GUI_BUTTON_WIDTH_CONNECT = 75   # Narrower for Connect/Disconnect to fit row
 $GUI_BUTTON_WIDTH_WIDE = 180
 $GUI_LABEL_HEIGHT = 20
-$GUI_FORM_WIDTH = 850
+$GUI_FORM_WIDTH = 920
 $GUI_FORM_HEIGHT = 600
 
 # --- Function Definitions for Module Management ---
@@ -196,7 +196,11 @@ function Setup-GUI {
     $global:TenantComboBox.Size = [System.Drawing.Size]::new(220, 25)
     $global:TenantComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
     $global:TenantComboBox.TabIndex = 0
-    Update-TenantComboBox
+    # Placeholder until Shown: avoids blocking ShowDialog on Graph token calls per WCM tenant
+    $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = "Interactive (browser)"; TenantId = $null }) | Out-Null
+    $global:TenantComboBox.DisplayMember = "DisplayText"
+    $global:TenantComboBox.ValueMember = "TenantId"
+    $global:TenantComboBox.SelectedIndex = 0
     $global:Form.Controls.Add($global:TenantComboBox)
 
     # Refresh tenants button (reload WCM app sessions after adding via ExchangeOnlineAnalyzer)
@@ -204,6 +208,8 @@ function Setup-GUI {
     $refreshTenantsBtn.Text = "↻"
     $refreshTenantsBtn.Location = [System.Drawing.Point]::new($tenantComboX + 222, $row1Y)
     $refreshTenantsBtn.Size = [System.Drawing.Size]::new(28, [int]$GUI_BUTTON_HEIGHT)
+    $refreshTip = New-Object System.Windows.Forms.ToolTip
+    $refreshTip.SetToolTip($refreshTenantsBtn, "Reload tenants from Windows Credential Manager (fast; no Graph lookup per tenant).")
     $refreshTenantsBtn.Add_Click({ Update-TenantComboBox })
     $global:Form.Controls.Add($refreshTenantsBtn)
 
@@ -252,8 +258,18 @@ function Setup-GUI {
     $global:DeleteAppButton.ForeColor = [System.Drawing.Color]::White
     $global:Form.Controls.Add($global:DeleteAppButton)
 
+    # Clear local WCM only (does not delete Entra app); lists EOA + ESR + orphan targets
+    $clearLocalX = [int]($deleteAppX + 90 + 6)
+    $global:ClearLocalWcmButton = New-Object System.Windows.Forms.Button
+    $global:ClearLocalWcmButton.Location = [System.Drawing.Point]::new($clearLocalX, $row1Y)
+    $global:ClearLocalWcmButton.Size = [System.Drawing.Size]::new(108, [int]$GUI_BUTTON_HEIGHT)
+    $global:ClearLocalWcmButton.Text = "Clear local"
+    $clearLocalTip = New-Object System.Windows.Forms.ToolTip
+    $clearLocalTip.SetToolTip($global:ClearLocalWcmButton, "Remove stored Graph credentials from this PC only (Windows Credential Manager). Does not delete apps in Entra. Shows tenant ID when name is unknown; includes stray WCM targets.")
+    $global:Form.Controls.Add($global:ClearLocalWcmButton)
+
     # Copy Ticket Note Button
-    $copyTicketX = [int]($deleteAppX + 90 + $GUI_MARGIN)
+    $copyTicketX = [int]($clearLocalX + 108 + $GUI_MARGIN)
     $global:CopyTicketNoteButton.Location = [System.Drawing.Point]::new($copyTicketX, $row1Y)
     $global:CopyTicketNoteButton.Size = [System.Drawing.Size]::new(150, [int]$GUI_BUTTON_HEIGHT)
     $global:CopyTicketNoteButton.Text = "Copy Ticket Note"
@@ -415,6 +431,7 @@ function Setup-GUI {
     $global:AddAppButton.Add_Click({ Add-XOAAppRegistration })
     $global:UpdateAppPermissionsButton.Add_Click({ Update-XOAAppPermissions })
     $global:DeleteAppButton.Add_Click({ Delete-XOAAppRegistration })
+    $global:ClearLocalWcmButton.Add_Click({ Clear-LocalGraphWcmCredentialsOnly })
 
     # Copy Secret Button Click
     $global:CopySecretButton.Add_Click({
@@ -428,27 +445,170 @@ function Setup-GUI {
 
     # Clear secret from UI when form closes (security: reduce exposure window)
     $global:Form.Add_FormClosing({
+        Stop-TenantComboGraphNameRefresh
         if ($global:NewSecretTextBox -and $global:NewSecretTextBox.Text) {
             $global:NewSecretTextBox.Text = ""
         }
     })
+
+    # Populate WCM tenants after the form is displayed (non-blocking startup; no Graph per tenant)
+    $global:Form.Add_Shown({
+        if ($global:TenantComboBox -and -not $global:TenantComboBox.IsDisposed) {
+            Update-TenantComboBox
+        }
+    })
+
     Write-Host "GUI setup complete."
 }
 
 
 # --- Logic Functions ---
 
+# Deferred Graph /organization lookup so the form appears before per-tenant token calls (one tenant per timer tick)
+$script:tenantDisplayNameRefreshTimer = $null
+$script:tenantDisplayNameRefreshQueue = $null
+
+function Sync-TenantComboAlphabeticalOrder {
+    <#
+    .SYNOPSIS
+        Keeps "Interactive (browser)" at index 0; sorts all WCM tenant rows by DisplayText (then TenantId).
+    #>
+    param([string]$PreferredTenantId = '')
+    if (-not $global:TenantComboBox -or $global:TenantComboBox.IsDisposed) { return }
+    if ($global:TenantComboBox.Items.Count -le 1) { return }
+
+    $sel = $PreferredTenantId
+    if (-not $sel) {
+        try {
+            $cur = $global:TenantComboBox.SelectedItem
+            if ($cur -and $cur.TenantId) { $sel = [string]$cur.TenantId }
+        } catch { }
+    }
+
+    $tenants = [System.Collections.ArrayList]::new()
+    for ($i = 1; $i -lt $global:TenantComboBox.Items.Count; $i++) {
+        [void]$tenants.Add($global:TenantComboBox.Items[$i])
+    }
+    $sorted = @(
+        $tenants | Sort-Object -Property @{ Expression = { [string]$_.DisplayText }; Ascending = $true }, @{ Expression = { [string]$_.TenantId }; Ascending = $true }
+    )
+
+    while ($global:TenantComboBox.Items.Count -gt 1) {
+        $global:TenantComboBox.Items.RemoveAt(1)
+    }
+    foreach ($t in $sorted) {
+        [void]$global:TenantComboBox.Items.Add($t)
+    }
+
+    if ($sel) {
+        for ($i = 0; $i -lt $global:TenantComboBox.Items.Count; $i++) {
+            $row = $global:TenantComboBox.Items[$i]
+            if ($row -and $row.TenantId -and [string]$row.TenantId -eq $sel) {
+                $global:TenantComboBox.SelectedIndex = $i
+                return
+            }
+        }
+    }
+    if ($global:TenantComboBox.Items.Count -gt 0) {
+        $global:TenantComboBox.SelectedIndex = 0
+    }
+}
+
+function Stop-TenantComboGraphNameRefresh {
+    if ($script:tenantDisplayNameRefreshTimer) {
+        try { $script:tenantDisplayNameRefreshTimer.Stop() } catch { }
+        try { $script:tenantDisplayNameRefreshTimer.Dispose() } catch { }
+        $script:tenantDisplayNameRefreshTimer = $null
+    }
+    $script:tenantDisplayNameRefreshQueue = $null
+}
+
+function Start-TenantComboGraphNameRefresh {
+    if (-not $global:TenantComboBox -or $global:TenantComboBox.IsDisposed) { return }
+    $queue = [System.Collections.Queue]::new()
+    for ($i = 1; $i -lt $global:TenantComboBox.Items.Count; $i++) {
+        $it = $global:TenantComboBox.Items[$i]
+        if (-not $it) { continue }
+        $tid = $it.TenantId
+        if (-not $tid) { continue }
+        if ([string]$it.DisplayText -eq [string]$tid) {
+            $queue.Enqueue([string]$tid)
+        }
+    }
+    if ($queue.Count -eq 0) { return }
+
+    Stop-TenantComboGraphNameRefresh
+    $script:tenantDisplayNameRefreshQueue = $queue
+
+    $timer = New-Object System.Windows.Forms.Timer
+    $timer.Interval = 120
+    $timer.Add_Tick({
+        if (-not $global:TenantComboBox -or $global:TenantComboBox.IsDisposed) {
+            if ($script:tenantDisplayNameRefreshTimer) { $script:tenantDisplayNameRefreshTimer.Stop() }
+            return
+        }
+        if (-not $script:tenantDisplayNameRefreshQueue -or $script:tenantDisplayNameRefreshQueue.Count -eq 0) {
+            if ($script:tenantDisplayNameRefreshTimer) {
+                $script:tenantDisplayNameRefreshTimer.Stop()
+                try { $script:tenantDisplayNameRefreshTimer.Dispose() } catch { }
+                $script:tenantDisplayNameRefreshTimer = $null
+            }
+            $script:tenantDisplayNameRefreshQueue = $null
+            return
+        }
+        $tid = $script:tenantDisplayNameRefreshQueue.Dequeue()
+        $selTenantId = $null
+        try {
+            $sel = $global:TenantComboBox.SelectedItem
+            if ($sel -and $sel.TenantId) { $selTenantId = [string]$sel.TenantId }
+        } catch { }
+
+        $name = $null
+        try {
+            if (Get-Command Get-TenantDisplayNameFromWCM -ErrorAction SilentlyContinue) {
+                $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix EOA
+            }
+        } catch { }
+
+        if ($name) {
+            for ($i = 0; $i -lt $global:TenantComboBox.Items.Count; $i++) {
+                $row = $global:TenantComboBox.Items[$i]
+                if ($row -and $row.TenantId -and [string]$row.TenantId -eq $tid) {
+                    $global:TenantComboBox.Items[$i] = [pscustomobject]@{ DisplayText = $name; TenantId = $tid }
+                    break
+                }
+            }
+        }
+
+        Sync-TenantComboAlphabeticalOrder -PreferredTenantId $selTenantId
+
+        if ($script:tenantDisplayNameRefreshQueue.Count -eq 0) {
+            if ($script:tenantDisplayNameRefreshTimer) {
+                $script:tenantDisplayNameRefreshTimer.Stop()
+                try { $script:tenantDisplayNameRefreshTimer.Dispose() } catch { }
+                $script:tenantDisplayNameRefreshTimer = $null
+            }
+            $script:tenantDisplayNameRefreshQueue = $null
+        }
+    })
+    $script:tenantDisplayNameRefreshTimer = $timer
+    $timer.Start()
+}
+
 function Update-TenantComboBox {
     <#
     .SYNOPSIS
         Populates the tenant dropdown with Graph app sessions from WCM (EOA-GraphApp-*).
+    .NOTES
+        Fills quickly with -SkipGraphLookup, then Start-TenantComboGraphNameRefresh resolves friendly names via Graph one tenant per timer tick.
     #>
     if (-not $global:TenantComboBox) { return }
+    Stop-TenantComboGraphNameRefresh
     $global:TenantComboBox.Items.Clear()
     $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = "Interactive (browser)"; TenantId = $null }) | Out-Null
     try {
         if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
-            $tenantList = Get-WCMTenantListWithNames -Prefix EOA | Sort-Object -Property DisplayText
+            $tenantList = Get-WCMTenantListWithNames -Prefix EOA -SkipGraphLookup
             foreach ($t in $tenantList) {
                 $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = $t.DisplayText; TenantId = $t.TenantId }) | Out-Null
             }
@@ -456,9 +616,8 @@ function Update-TenantComboBox {
     } catch { /* non-fatal */ }
     $global:TenantComboBox.DisplayMember = "DisplayText"
     $global:TenantComboBox.ValueMember = "TenantId"
-    if ($global:TenantComboBox.Items.Count -gt 0) {
-        $global:TenantComboBox.SelectedIndex = 0
-    }
+    Sync-TenantComboAlphabeticalOrder
+    Start-TenantComboGraphNameRefresh
 }
 
 function Update-XOAAppPermissions {
@@ -523,7 +682,7 @@ function Delete-XOAAppRegistration {
     $tenantList = @()
     try {
         if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
-            $tenantList = Get-WCMTenantListWithNames -Prefix EOA
+            $tenantList = Get-WCMTenantListWithNames -Prefix EOA -SkipGraphLookup
         }
     } catch {}
     if ($tenantList.Count -eq 0) {
@@ -583,6 +742,29 @@ function Delete-XOAAppRegistration {
         [System.Windows.Forms.MessageBox]::Show("App removal completed for $($selected.Count) tenant(s).", "Delete App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Failed: $($_.Exception.Message)", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+}
+
+function Clear-LocalGraphWcmCredentialsOnly {
+    <#
+    .SYNOPSIS
+        Removes Graph app credentials from Windows Credential Manager only (EOA + ESR). Entra apps unchanged.
+    #>
+    try {
+        if (-not (Test-Path $graphAppCredentialModulePath)) {
+            [System.Windows.Forms.MessageBox]::Show("Module not found: $graphAppCredentialModulePath", "Clear local", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        Import-Module $graphAppCredentialModulePath -Force -ErrorAction Stop
+        if (Get-Command Show-ClearLocalGraphWcmPicker -ErrorAction SilentlyContinue) {
+            [void](Show-ClearLocalGraphWcmPicker)
+        } else {
+            [System.Windows.Forms.MessageBox]::Show("Show-ClearLocalGraphWcmPicker not available. Update Modules\GraphAppCredential.psm1.", "Clear local", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning)
+            return
+        }
+        Update-TenantComboBox
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Failed: $($_.Exception.Message)", "Clear local", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
     }
 }
 
@@ -902,7 +1084,11 @@ function Show-SelectApplicationDialog {
     $selForm.AcceptButton = $btnOk
     $selForm.CancelButton = $btnCancel
     $selForm.Controls.AddRange(@($btnOk, $btnCancel))
-    $listBox.DoubleClick += { $selForm.DialogResult = [System.Windows.Forms.DialogResult]::OK; $selForm.Close() }
+    # ListBox: use Add_DoubleClick — .DoubleClick += is not valid on this object in PowerShell
+    $listBox.Add_DoubleClick({
+        $selForm.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $selForm.Close()
+    })
     if ($selForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
     $selected = $listBox.SelectedItem
     if (-not $selected) {
@@ -1290,7 +1476,8 @@ function Add-BarracudaXdrPermissions {
         $hint = ""
         if ($errMsg -match "Authorization_RequestDenied|Insufficient privileges|Forbidden|403|Access denied") {
             $ctx = Get-MgContext -ErrorAction SilentlyContinue
-            if ($ctx -and $ctx.AuthType -eq "App-only") {
+            # Graph PowerShell reports App-only as "AppOnly" (not "App-only")
+            if ($ctx -and ($ctx.AuthType -eq 'AppOnly' -or $ctx.AuthType -eq 'App-only')) {
                 $hint = @"
 
 The saved app does not have the required permissions (Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All).

@@ -135,16 +135,24 @@ function Get-WCMTenantListWithNames {
         Returns WCM tenants with display names for dropdown display, sorted alphabetically by DisplayText.
     .PARAMETER Prefix
         'EOA' or 'ESR'. Omit for EOA.
+    .PARAMETER SkipGraphLookup
+        If set, does not call Microsoft Graph to resolve organization display name for tenants missing
+        a locally stored display name. Use for UI startup to avoid blocking on network/token per tenant.
     .OUTPUTS
         @(@{ TenantId; DisplayName; DisplayText; Source }, ...)
     #>
-    param([Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA')
+    param(
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
+        [switch]$SkipGraphLookup
+    )
     $result = @()
     $ids = Get-WCMTenantIds -Prefix $Prefix
     $sourceLabel = if ($Prefix -eq 'ESR') { ' (ESR)' } else { '' }
     foreach ($tid in $ids) {
         $name = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
-        if (-not $name) { $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix }
+        if (-not $name -and -not $SkipGraphLookup) {
+            $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix
+        }
         $displayText = if ($name) { "$name$sourceLabel" } else { "$tid$sourceLabel" }
         $result += [pscustomobject]@{ TenantId = $tid; DisplayName = $name; DisplayText = $displayText; Source = $Prefix }
     }
@@ -280,4 +288,177 @@ function Remove-GraphAppCredentialFromWCM {
     } catch { }
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM
+function _Get-GraphAppShortTargetsFromCmdKeyList {
+    param([Parameter(Mandatory = $true)][string]$NamePrefix)
+    $set = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    try {
+        $output = cmdkey /list 2>$null
+        $text = if ($output -is [string]) { $output } else { [string]::Join([Environment]::NewLine, @($output)) }
+        foreach ($line in $text -split '\r?\n') {
+            if ($line -notmatch 'Target:\s*(.+)$') { continue }
+            $rest = $Matches[1].Trim()
+            $short = $null
+            if ($rest -match 'target=(.+)$') { $short = $Matches[1].Trim() }
+            elseif ($rest.StartsWith($NamePrefix, [StringComparison]::OrdinalIgnoreCase)) { $short = $rest }
+            if ($short -and $short.StartsWith($NamePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                [void]$set.Add($short)
+            }
+        }
+    } catch {}
+    return @($set)
+}
+
+function Get-WCMUnrecognizedGraphAppTargets {
+    <#
+    .SYNOPSIS
+        EOA- or ESR- GraphApp credential targets that do not match GUID or GUID-DisplayName pattern.
+    #>
+    param(
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
+    )
+    $credPrefix = if ($Prefix -eq 'ESR') { $script:credTargetPrefixESR } else { $script:credTargetPrefixEOA }
+    $esc = [regex]::Escape($credPrefix)
+    $validMain = "^$esc[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+    $validDisp = "^$esc[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}-DisplayName$"
+    $all = _Get-GraphAppShortTargetsFromCmdKeyList -NamePrefix $credPrefix
+    $orphans = [System.Collections.Generic.List[string]]::new()
+    foreach ($t in $all) {
+        if ($t -notmatch $validMain -and $t -notmatch $validDisp) {
+            $orphans.Add($t)
+        }
+    }
+    return @($orphans | Sort-Object)
+}
+
+function Remove-WCMGraphCredentialTarget {
+    param([Parameter(Mandatory = $true)][string]$TargetName)
+    if (Get-Module -ListAvailable -Name CredentialManager) {
+        try {
+            Import-Module CredentialManager -ErrorAction Stop
+            Remove-StoredCredential -Target $TargetName -ErrorAction SilentlyContinue
+        } catch { }
+    }
+    try {
+        Start-Process -FilePath "cmdkey.exe" -ArgumentList "/delete:$TargetName" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+    } catch { }
+}
+
+function Remove-GraphAppCredentialsLocalOnly {
+    <#
+    .SYNOPSIS
+        Removes WCM entries for tenant(s) only; does not change Entra.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string[]]$TenantId,
+        [Parameter(Mandatory = $false)]
+        [ValidateSet('EOA', 'ESR')]
+        [string]$Prefix = 'EOA'
+    )
+    foreach ($tid in $TenantId) {
+        if ([string]::IsNullOrWhiteSpace($tid)) { continue }
+        Remove-GraphAppCredentialFromWCM -TenantId $tid.Trim() -Prefix $Prefix
+    }
+}
+
+function Show-ClearLocalGraphWcmPicker {
+    <#
+    .SYNOPSIS
+        Lists EOA (ExchangeOnlineAnalyzer) and ESR stored Graph app credentials for local-only removal.
+    #>
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    } catch {
+        Write-Warning "Show-ClearLocalGraphWcmPicker: System.Windows.Forms not available: $($_.Exception.Message)"
+        return 0
+    }
+    $rowList = [System.Collections.ArrayList]::new()
+    foreach ($pfx in @('EOA', 'ESR')) {
+        foreach ($t in Get-WCMTenantListWithNames -Prefix $pfx -SkipGraphLookup) {
+            if ($pfx -eq 'EOA') {
+                $label = if ($t.DisplayName) { "$($t.DisplayText) [EOA]" } else { "$($t.TenantId) [EOA] (tenant ID - name unknown)" }
+            }
+            else {
+                $label = if ($t.DisplayName) { $t.DisplayText } else { "$($t.TenantId) [ESR] (tenant ID - name unknown)" }
+            }
+            [void]$rowList.Add([pscustomobject]@{ DisplayText = $label; Kind = 'Tenant'; TenantId = $t.TenantId; WcmPrefix = $pfx; OrphanTarget = [string]$null })
+        }
+        foreach ($o in Get-WCMUnrecognizedGraphAppTargets -Prefix $pfx) {
+            [void]$rowList.Add([pscustomobject]@{ DisplayText = "Unrecognized WCM target [$pfx]: $o"; Kind = 'Orphan'; TenantId = [string]$null; WcmPrefix = $pfx; OrphanTarget = $o })
+        }
+    }
+    if ($rowList.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "No Graph app credentials found in Windows Credential Manager (EOA or ESR).",
+            "Clear local credentials",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        )
+        return 0
+    }
+    $sorted = @($rowList | Sort-Object -Property DisplayText)
+    $selForm = New-Object System.Windows.Forms.Form
+    $selForm.Text = "Clear local credentials (this PC only)"
+    $selForm.Size = New-Object System.Drawing.Size(540, 420)
+    $selForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
+    $selForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
+    $lbl = New-Object System.Windows.Forms.Label
+    $lbl.Text = "Removes entries from Windows Credential Manager only.`r`nDoes NOT delete app registrations in Entra ID.`r`n`r`n[EOA] = ExchangeOnlineAnalyzer app; [ESR] = Entra Secret Rotate. Tenant ID is always listed."
+    $lbl.Location = New-Object System.Drawing.Point(10, 10)
+    $lbl.Size = New-Object System.Drawing.Size(510, 75)
+    $clb = New-Object System.Windows.Forms.CheckedListBox
+    $clb.Location = New-Object System.Drawing.Point(10, 90)
+    $clb.Size = New-Object System.Drawing.Size(510, 230)
+    $clb.CheckOnClick = $true
+    foreach ($r in $sorted) { [void]$clb.Items.Add($r.DisplayText, $false) }
+    $btnOk = New-Object System.Windows.Forms.Button
+    $btnOk.Text = "Remove selected"
+    $btnOk.Location = New-Object System.Drawing.Point(210, 330)
+    $btnOk.Size = New-Object System.Drawing.Size(140, 28)
+    $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::OK
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Text = "Cancel"
+    $btnCancel.Location = New-Object System.Drawing.Point(360, 330)
+    $btnCancel.Size = New-Object System.Drawing.Size(100, 28)
+    $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $selForm.AcceptButton = $btnOk
+    $selForm.CancelButton = $btnCancel
+    $selForm.Controls.AddRange(@($lbl, $clb, $btnOk, $btnCancel))
+    if ($selForm.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return 0 }
+    $picked = @()
+    for ($i = 0; $i -lt $clb.Items.Count; $i++) {
+        if ($clb.GetItemChecked($i)) { $picked += $sorted[$i] }
+    }
+    if ($picked.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("No rows selected.", "Clear local credentials", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        return 0
+    }
+    $confirm = [System.Windows.Forms.MessageBox]::Show(
+        "Remove $($picked.Count) stored credential entry/entries from this PC only?`n`nEntra app registrations will NOT be changed.",
+        "Confirm",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+    if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) { return 0 }
+    $removed = 0
+    foreach ($p in $picked) {
+        if ($p.Kind -eq 'Tenant' -and $p.TenantId) {
+            Remove-GraphAppCredentialsLocalOnly -TenantId @($p.TenantId) -Prefix $p.WcmPrefix
+            $removed++
+        }
+        elseif ($p.Kind -eq 'Orphan' -and $p.OrphanTarget) {
+            Remove-WCMGraphCredentialTarget -TargetName $p.OrphanTarget
+            $removed++
+        }
+    }
+    [System.Windows.Forms.MessageBox]::Show(
+        "Removed $removed local credential entry/entries from Windows Credential Manager.",
+        "Clear local credentials",
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Information
+    )
+    return $removed
+}
+
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker
