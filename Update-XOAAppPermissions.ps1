@@ -1,8 +1,9 @@
 <#
 .SYNOPSIS
-    Adds Application.ReadWrite.All and AppRoleAssignment.ReadWrite.All to existing XOA app.
+    Adds Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All, and Organization.Read.All to existing XOA app.
 .DESCRIPTION
     Updates the XOA app with permissions needed for Entra Secret Rotate (secret rotation + Add ATR).
+    Organization.Read.All lets the app read the tenant display name for Windows Credential Manager UI labels.
     Does not recreate the app - only adds missing permissions and grants admin consent.
     Requires: Application.ReadWrite.All, AppRoleAssignment.ReadWrite.All (interactive admin).
     Set $appDisplayName to match your ExchangeOnlineAnalyzer app registration name.
@@ -20,6 +21,7 @@ $graphAppId = '00000003-0000-0000-c000-000000000000'
 $permsToAdd = @(
     @{ id = '1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9'; name = 'Application.ReadWrite.All' }
     @{ id = '06b708a9-e830-4db3-a914-8e69da51d44f'; name = 'AppRoleAssignment.ReadWrite.All' }
+    @{ id = '498476ce-e0fe-48b0-b801-37ba7e2685c6'; name = 'Organization.Read.All' }
 )
 
 $scopes = @('Application.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All')
@@ -100,5 +102,20 @@ if ($consentGranted.Count -eq 0 -and $toAdd.Count -eq 0) {
     Write-Host "`nAll permissions already configured." -ForegroundColor Green
 } else {
     Write-Host "`n=== Update Complete ===" -ForegroundColor Cyan
+}
+
+Write-Host "`n--- Verify tenant display names (Organization.Read.All on Microsoft Graph) ---" -ForegroundColor Cyan
+try {
+    $orgReadAppRoleId = '498476ce-e0fe-48b0-b801-37ba7e2685c6'
+    $assignments = @(Get-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $clientSp.Id -ErrorAction SilentlyContinue | Where-Object { $_.ResourceId -eq $msGraphSp.Id })
+    $hasOrgRead = @($assignments | Where-Object { $_.AppRoleId -eq $orgReadAppRoleId }).Count -gt 0
+    if ($hasOrgRead) {
+        Write-Host "  Organization.Read.All is assigned to this app on Microsoft Graph (required for tenant names in the UI)." -ForegroundColor Green
+    } else {
+        Write-Warning "  Organization.Read.All is NOT assigned on the service principal. The UI will show 'Organization name not loaded' until an admin grants consent."
+        Write-Host "  Entra: Enterprise applications > $appDisplayName > Permissions > grant admin consent for the tenant." -ForegroundColor Yellow
+    }
+} catch {
+    Write-Warning "Could not verify Graph app role assignments: $($_.Exception.Message)"
 }
 Write-Host ""

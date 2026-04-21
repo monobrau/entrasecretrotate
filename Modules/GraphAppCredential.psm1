@@ -10,6 +10,8 @@
 
 $script:credTargetPrefixEOA = 'EOA-GraphApp-'
 $script:credTargetPrefixESR = 'ESR-GraphApp-'
+# First Microsoft Graph /organization error when resolving tenant labels (for UI diagnostics)
+$script:LastGraphTenantNameLookupFailure = $null
 
 function Get-GraphAppCredentialFromWCM {
     <#
@@ -99,6 +101,31 @@ function Get-WCMTenantIds {
     return $tenantIds
 }
 
+function Set-WCMTenantDisplayName {
+    <#
+    .SYNOPSIS
+        Stores tenant organization display name in WCM (EOA/ESR-GraphApp-{tenantId}-DisplayName) for UI labels.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$TenantId,
+        [Parameter(Mandatory = $true)][string]$DisplayName,
+        [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA'
+    )
+    if ([string]::IsNullOrWhiteSpace($TenantId) -or [string]::IsNullOrWhiteSpace($DisplayName)) { return }
+    $credPrefix = if ($Prefix -eq 'ESR') { $script:credTargetPrefixESR } else { $script:credTargetPrefixEOA }
+    $nameTarget = "${credPrefix}${TenantId}-DisplayName"
+    $dn = $DisplayName.Trim()
+    try {
+        if (Get-Module -ListAvailable -Name CredentialManager) {
+            Import-Module CredentialManager -ErrorAction Stop
+            $nameCred = New-Object PSCredential 'DisplayName', (ConvertTo-SecureString $dn -AsPlainText -Force)
+            New-StoredCredential -Target $nameTarget -Credentials $nameCred -ErrorAction Stop | Out-Null
+        } else {
+            Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$nameTarget", "/user:DisplayName", "/pass:$dn" -Wait -PassThru -WindowStyle Hidden | Out-Null
+        }
+    } catch { }
+}
+
 function _Get-StoredDisplayName {
     param([string]$TenantId, [string]$Prefix = 'EOA')
     $credPrefix = if ($Prefix -eq 'ESR') { $script:credTargetPrefixESR } else { $script:credTargetPrefixEOA }
@@ -115,18 +142,63 @@ function _Get-StoredDisplayName {
     return $null
 }
 
+function Get-GraphTenantNameLookupLastError {
+    <#
+    .SYNOPSIS
+        Returns the first Microsoft Graph error text captured while resolving organization names, or $null.
+    #>
+    return [string]$script:LastGraphTenantNameLookupFailure
+}
+
 function Get-TenantDisplayNameFromWCM {
     param([Parameter(Mandatory = $true)][string]$TenantId, [string]$Prefix = 'EOA')
     $token = Get-GraphAppTokenFromWCM -TenantId $TenantId -Prefix $Prefix
-    if (-not $token) { return $null }
+    if (-not $token) {
+        if (-not $script:LastGraphTenantNameLookupFailure) {
+            $script:LastGraphTenantNameLookupFailure = 'Could not obtain an OAuth token (check tenant ID and client secret in Windows Credential Manager for this saved app).'
+        }
+        return $null
+    }
     try {
         $headers = @{ Authorization = "Bearer $token" }
-        $resp = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/organization" -Headers $headers -Method Get -ErrorAction Stop
-        if ($resp.value -and $resp.value.Count -gt 0 -and $resp.value[0].displayName) {
-            return $resp.value[0].displayName
+        $uri = 'https://graph.microsoft.com/v1.0/organization?$select=displayName,verifiedDomains'
+        $resp = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get -ErrorAction Stop
+        # value may be a single object or an array after JSON deserialization — do not use .Count on value alone
+        $orgs = @($resp.value)
+        if ($orgs.Count -lt 1) { return $null }
+        $org = $orgs[0]
+        $dn = $null
+        if ($null -ne $org.displayName -and -not [string]::IsNullOrWhiteSpace([string]$org.displayName)) {
+            $dn = [string]$org.displayName
         }
-    } catch {}
-    return $null
+        if ([string]::IsNullOrWhiteSpace($dn) -and $null -ne $org.verifiedDomains) {
+            $domains = @($org.verifiedDomains)
+            $defObj = $domains | Where-Object { $_.isDefault -eq $true } | Select-Object -First 1
+            if ($defObj -and $defObj.name) { $dn = [string]$defObj.name }
+            elseif ($domains.Count -gt 0 -and $domains[0].name) { $dn = [string]$domains[0].name }
+        }
+        if ([string]::IsNullOrWhiteSpace($dn)) { return $null }
+        $dn = $dn.Trim()
+        Set-WCMTenantDisplayName -TenantId $TenantId -DisplayName $dn -Prefix $Prefix
+        return $dn
+    } catch {
+        $msg = $_.Exception.Message
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            $raw = [string]$_.ErrorDetails.Message
+            try {
+                $j = $raw | ConvertFrom-Json -ErrorAction Stop
+                if ($j.error.message) { $msg = [string]$j.error.message }
+                elseif ($j.error_description) { $msg = [string]$j.error_description }
+                else { $msg = $raw }
+            } catch {
+                $msg = $raw
+            }
+        }
+        if (-not $script:LastGraphTenantNameLookupFailure) {
+            $script:LastGraphTenantNameLookupFailure = $msg
+        }
+        return $null
+    }
 }
 
 function Get-WCMTenantListWithNames {
@@ -140,23 +212,29 @@ function Get-WCMTenantListWithNames {
         a locally stored display name. Use for UI startup to avoid blocking on network/token per tenant.
     .OUTPUTS
         @(@{ TenantId; DisplayName; DisplayText; Source }, ...)
+        DisplayText is the human-readable list label only (organization display name). TenantId is always set for selection and removal logic—GUIDs are not shown in DisplayText.
     #>
     param(
         [Parameter(Mandatory = $false)][ValidateSet('EOA', 'ESR')][string]$Prefix = 'EOA',
         [switch]$SkipGraphLookup
     )
+    $noNameLabel = 'Organization name not loaded'
     $result = @()
-    $ids = Get-WCMTenantIds -Prefix $Prefix
-    $sourceLabel = if ($Prefix -eq 'ESR') { ' (ESR)' } else { '' }
+    if (-not $SkipGraphLookup) { $script:LastGraphTenantNameLookupFailure = $null }
+    $ids = @(Get-WCMTenantIds -Prefix $Prefix) | Sort-Object
     foreach ($tid in $ids) {
         $name = _Get-StoredDisplayName -TenantId $tid -Prefix $Prefix
         if (-not $name -and -not $SkipGraphLookup) {
             $name = Get-TenantDisplayNameFromWCM -TenantId $tid -Prefix $Prefix
         }
-        $displayText = if ($name) { "$name$sourceLabel" } else { "$tid$sourceLabel" }
+        if ($name) {
+            $displayText = $name.Trim()
+        } else {
+            $displayText = $noNameLabel
+        }
         $result += [pscustomobject]@{ TenantId = $tid; DisplayName = $name; DisplayText = $displayText; Source = $Prefix }
     }
-    return $result | Sort-Object -Property DisplayText
+    return $result | Sort-Object -Property @{ Expression = { [string]$_.DisplayText }; Ascending = $true }, @{ Expression = { [string]$_.TenantId }; Ascending = $true }
 }
 
 function Get-GraphAppTokenFromWCM {
@@ -256,16 +334,7 @@ function Save-GraphAppCredentialToWCM {
         Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$target", "/user:$userName", "/pass:$ClientSecret" -Wait -PassThru -WindowStyle Hidden | Out-Null
     }
     if ($TenantDisplayName -and -not [string]::IsNullOrWhiteSpace($TenantDisplayName)) {
-        $nameTarget = "${credPrefix}${TenantId}-DisplayName"
-        try {
-            if (Get-Module -ListAvailable -Name CredentialManager) {
-                Import-Module CredentialManager -ErrorAction Stop
-                $nameCred = New-Object PSCredential 'DisplayName', (ConvertTo-SecureString $TenantDisplayName -AsPlainText -Force)
-                New-StoredCredential -Target $nameTarget -Credentials $nameCred -ErrorAction Stop | Out-Null
-            } else {
-                Start-Process -FilePath "cmdkey.exe" -ArgumentList "/generic:$nameTarget", "/user:DisplayName", "/pass:$TenantDisplayName" -Wait -PassThru -WindowStyle Hidden | Out-Null
-            }
-        } catch { }
+        Set-WCMTenantDisplayName -TenantId $TenantId -DisplayName $TenantDisplayName -Prefix $Prefix
     }
 }
 
@@ -373,20 +442,23 @@ function Show-ClearLocalGraphWcmPicker {
         Write-Warning "Show-ClearLocalGraphWcmPicker: System.Windows.Forms not available: $($_.Exception.Message)"
         return 0
     }
+    $prevWait = [System.Windows.Forms.Application]::UseWaitCursor
+    [System.Windows.Forms.Application]::UseWaitCursor = $true
+    [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::WaitCursor
     $rowList = [System.Collections.ArrayList]::new()
-    foreach ($pfx in @('EOA', 'ESR')) {
-        foreach ($t in Get-WCMTenantListWithNames -Prefix $pfx -SkipGraphLookup) {
-            if ($pfx -eq 'EOA') {
-                $label = if ($t.DisplayName) { "$($t.DisplayText) [EOA]" } else { "$($t.TenantId) [EOA] (tenant ID - name unknown)" }
+    try {
+        foreach ($pfx in @('EOA', 'ESR')) {
+            foreach ($t in Get-WCMTenantListWithNames -Prefix $pfx) {
+                $label = if ($pfx -eq 'EOA') { "[EOA] $($t.DisplayText)" } else { "[ESR] $($t.DisplayText)" }
+                [void]$rowList.Add([pscustomobject]@{ DisplayText = $label; Kind = 'Tenant'; TenantId = $t.TenantId; WcmPrefix = $pfx; OrphanTarget = [string]$null })
             }
-            else {
-                $label = if ($t.DisplayName) { $t.DisplayText } else { "$($t.TenantId) [ESR] (tenant ID - name unknown)" }
+            foreach ($o in Get-WCMUnrecognizedGraphAppTargets -Prefix $pfx) {
+                [void]$rowList.Add([pscustomobject]@{ DisplayText = "Unrecognized WCM target [$pfx]: $o"; Kind = 'Orphan'; TenantId = [string]$null; WcmPrefix = $pfx; OrphanTarget = $o })
             }
-            [void]$rowList.Add([pscustomobject]@{ DisplayText = $label; Kind = 'Tenant'; TenantId = $t.TenantId; WcmPrefix = $pfx; OrphanTarget = [string]$null })
         }
-        foreach ($o in Get-WCMUnrecognizedGraphAppTargets -Prefix $pfx) {
-            [void]$rowList.Add([pscustomobject]@{ DisplayText = "Unrecognized WCM target [$pfx]: $o"; Kind = 'Orphan'; TenantId = [string]$null; WcmPrefix = $pfx; OrphanTarget = $o })
-        }
+    } finally {
+        [System.Windows.Forms.Application]::UseWaitCursor = $prevWait
+        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::Default
     }
     if ($rowList.Count -eq 0) {
         [System.Windows.Forms.MessageBox]::Show(
@@ -404,12 +476,12 @@ function Show-ClearLocalGraphWcmPicker {
     $selForm.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterParent
     $selForm.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedDialog
     $lbl = New-Object System.Windows.Forms.Label
-    $lbl.Text = "Removes entries from Windows Credential Manager only.`r`nDoes NOT delete app registrations in Entra ID.`r`n`r`n[EOA] = ExchangeOnlineAnalyzer app; [ESR] = Entra Secret Rotate. Tenant ID is always listed."
+    $lbl.Text = "Removes entries from Windows Credential Manager only.`r`nDoes NOT delete app registrations in Entra ID.`r`n`r`n[EOA] = ExchangeOnlineAnalyzer app; [ESR] = Entra Secret Rotate. Rows list organization display names only.`r`nIf a row shows Organization name not loaded, run Update App Perms (Organization.Read.All), use Refresh names on the main window, then try again."
     $lbl.Location = New-Object System.Drawing.Point(10, 10)
-    $lbl.Size = New-Object System.Drawing.Size(510, 75)
+    $lbl.Size = New-Object System.Drawing.Size(510, 92)
     $clb = New-Object System.Windows.Forms.CheckedListBox
-    $clb.Location = New-Object System.Drawing.Point(10, 90)
-    $clb.Size = New-Object System.Drawing.Size(510, 230)
+    $clb.Location = New-Object System.Drawing.Point(10, 108)
+    $clb.Size = New-Object System.Drawing.Size(510, 212)
     $clb.CheckOnClick = $true
     foreach ($r in $sorted) { [void]$clb.Items.Add($r.DisplayText, $false) }
     $btnOk = New-Object System.Windows.Forms.Button
@@ -461,4 +533,4 @@ function Show-ClearLocalGraphWcmPicker {
     return $removed
 }
 
-Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-WCMTenantListWithNames, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker
+Export-ModuleMember -Function Get-GraphAppCredentialFromWCM, Get-GraphAppTokenFromWCM, Get-WCMTenantIds, Get-TenantDisplayNameFromWCM, Get-GraphTenantNameLookupLastError, Get-WCMTenantListWithNames, Set-WCMTenantDisplayName, Save-GraphAppCredentialToWCM, Remove-GraphAppCredentialFromWCM, Get-WCMUnrecognizedGraphAppTargets, Remove-WCMGraphCredentialTarget, Remove-GraphAppCredentialsLocalOnly, Show-ClearLocalGraphWcmPicker

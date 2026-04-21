@@ -1,7 +1,7 @@
 # Requires the Microsoft.Graph.Authentication and Microsoft.Graph.Applications modules
 # Install with: Install-Module Microsoft.Graph.Authentication, Microsoft.Graph.Applications -Scope CurrentUser
 
-$script:Version = "1.1.0"
+$script:Version = "1.1.1"
 Write-Host "Script started. Version $script:Version"
 
 # --- Configuration ---
@@ -72,7 +72,7 @@ $GUI_BUTTON_WIDTH = 110
 $GUI_BUTTON_WIDTH_CONNECT = 75   # Narrower for Connect/Disconnect to fit row
 $GUI_BUTTON_WIDTH_WIDE = 180
 $GUI_LABEL_HEIGHT = 20
-$GUI_FORM_WIDTH = 600
+$GUI_FORM_WIDTH = 680
 $GUI_FORM_HEIGHT = 600
 $EXPIRED_SECRETS_LISTBOX_WIDTH = 380   # Cap listbox width (was full form width)
 $COPY_SECRET_BUTTON_WIDTH = 95
@@ -195,31 +195,56 @@ function Setup-GUI {
     $global:Form.Controls.Add($tenantLabel)
 
     $tenantComboX = [int]($GUI_MARGIN + 50)
+    $script:tenantComboWidth = 220
     $global:TenantComboBox = New-Object System.Windows.Forms.ComboBox
     $global:TenantComboBox.Location = [System.Drawing.Point]::new($tenantComboX, $row1Y)
-    $global:TenantComboBox.Size = [System.Drawing.Size]::new(140, 25)
+    $global:TenantComboBox.Size = [System.Drawing.Size]::new($script:tenantComboWidth, 25)
+    $global:TenantComboBox.DropDownWidth = 480
     $global:TenantComboBox.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
     $global:TenantComboBox.TabIndex = 0
     # Placeholder until Shown: avoids blocking ShowDialog on Graph token calls per WCM tenant
-    $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = "Interactive (browser)"; TenantId = $null }) | Out-Null
+    [void]$global:TenantComboBox.Items.Add((New-GuiTenantRow -DisplayText "Interactive (browser)" -TenantId $null -HasDisplayName $true))
     $global:TenantComboBox.DisplayMember = "DisplayText"
-    $global:TenantComboBox.ValueMember = "TenantId"
     $global:TenantComboBox.SelectedIndex = 0
     $mainTip.SetToolTip($global:TenantComboBox, "Interactive: sign in with browser (Global Admin works). Saved app: use credentials from Windows Credential Manager.")
     $global:Form.Controls.Add($global:TenantComboBox)
 
     # Refresh tenants button (reload WCM app sessions after adding via ExchangeOnlineAnalyzer)
-    $refreshTenantsBtn = New-Object System.Windows.Forms.Button
-    $refreshTenantsBtn.Text = "↻"
-    $refreshTenantsBtn.Location = [System.Drawing.Point]::new($tenantComboX + 142, $row1Y)
-    $refreshTenantsBtn.Size = [System.Drawing.Size]::new(28, [int]$GUI_BUTTON_HEIGHT)
+    # Use $global: so Add_Click handlers still resolve controls after Setup-GUI returns (locals are not captured reliably).
+    $global:RefreshTenantsButton = New-Object System.Windows.Forms.Button
+    $global:RefreshTenantsButton.Text = "↻"
+    $global:RefreshTenantsButton.Location = [System.Drawing.Point]::new($tenantComboX + $script:tenantComboWidth + 2, $row1Y)
+    $global:RefreshTenantsButton.Size = [System.Drawing.Size]::new(28, [int]$GUI_BUTTON_HEIGHT)
     $refreshTip = New-Object System.Windows.Forms.ToolTip
-    $refreshTip.SetToolTip($refreshTenantsBtn, "Reload tenants from Windows Credential Manager (fast; no Graph lookup per tenant).")
-    $refreshTenantsBtn.Add_Click({ Update-TenantComboBox })
-    $global:Form.Controls.Add($refreshTenantsBtn)
+    $refreshTip.SetToolTip($global:RefreshTenantsButton, "Reload the tenant list from Windows Credential Manager only (fast). Use Refresh names to look up organization names from Graph for every saved tenant at once.")
+    $global:RefreshTenantsButton.Add_Click({ Update-TenantComboBox })
+    $global:Form.Controls.Add($global:RefreshTenantsButton)
+
+    $refreshAllNamesX = [int]($tenantComboX + $script:tenantComboWidth + 2 + 28 + 2)
+    $global:RefreshAllNamesButton = New-Object System.Windows.Forms.Button
+    $global:RefreshAllNamesButton.Text = "Refresh names"
+    $global:RefreshAllNamesButton.Location = [System.Drawing.Point]::new($refreshAllNamesX, $row1Y)
+    $global:RefreshAllNamesButton.Size = [System.Drawing.Size]::new(96, [int]$GUI_BUTTON_HEIGHT)
+    $mainTip.SetToolTip($global:RefreshAllNamesButton, "Look up every saved tenant's organization name from Microsoft Graph at once. Requires Organization.Read.All on the XOA app (run Update App Perms).")
+    $global:RefreshAllNamesButton.Add_Click({
+        $global:RefreshAllNamesButton.Enabled = $false
+        $global:RefreshTenantsButton.Enabled = $false
+        $prevWait = [System.Windows.Forms.Application]::UseWaitCursor
+        try {
+            [System.Windows.Forms.Application]::UseWaitCursor = $true
+            if ($global:Form -and -not $global:Form.IsDisposed) { $global:Form.UseWaitCursor = $true }
+            Update-TenantComboBox -ResolveDisplayNames
+        } finally {
+            if ($global:Form -and -not $global:Form.IsDisposed) { $global:Form.UseWaitCursor = $false }
+            [System.Windows.Forms.Application]::UseWaitCursor = $prevWait
+            if ($global:RefreshAllNamesButton -and -not $global:RefreshAllNamesButton.IsDisposed) { $global:RefreshAllNamesButton.Enabled = $true }
+            if ($global:RefreshTenantsButton -and -not $global:RefreshTenantsButton.IsDisposed) { $global:RefreshTenantsButton.Enabled = $true }
+        }
+    })
+    $global:Form.Controls.Add($global:RefreshAllNamesButton)
 
     # Connect Button
-    $connectX = [int]($tenantComboX + 140 + 28 + $GUI_MARGIN)
+    $connectX = [int]($refreshAllNamesX + 96 + $GUI_MARGIN)
     $global:ConnectButton.Location = [System.Drawing.Point]::new($connectX, $row1Y)
     $global:ConnectButton.Size = [System.Drawing.Size]::new([int]$GUI_BUTTON_WIDTH_CONNECT, [int]$GUI_BUTTON_HEIGHT)
     $global:ConnectButton.Text = "Connect"
@@ -476,7 +501,7 @@ function Show-AboutDialog {
 
 function Show-HelpDialog {
     $help = @"
-1. Choose tenant: Interactive (browser) or saved app
+1. Choose tenant: Interactive (browser) or saved app. The list shows organization names only. ↻ reloads from Credential Manager; Refresh names loads every name from Graph at once (Organization.Read.All on the XOA app). If you see Organization name not loaded, run Update App Perms, then Refresh names.
 2. Click Connect
 3. Find Expired Secrets or Select Application
 4. Select an app, then Generate New Secret or Add ATR Permissions
@@ -554,9 +579,9 @@ function Start-TenantComboGraphNameRefresh {
         if (-not $it) { continue }
         $tid = $it.TenantId
         if (-not $tid) { continue }
-        if ([string]$it.DisplayText -eq [string]$tid) {
-            $queue.Enqueue([string]$tid)
-        }
+        $hasName = $false
+        try { $hasName = [bool]$it.HasDisplayName } catch { $hasName = $false }
+        if (-not $hasName) { $queue.Enqueue([string]$tid) }
     }
     if ($queue.Count -eq 0) { return }
 
@@ -597,7 +622,7 @@ function Start-TenantComboGraphNameRefresh {
             for ($i = 0; $i -lt $global:TenantComboBox.Items.Count; $i++) {
                 $row = $global:TenantComboBox.Items[$i]
                 if ($row -and $row.TenantId -and [string]$row.TenantId -eq $tid) {
-                    $global:TenantComboBox.Items[$i] = [pscustomobject]@{ DisplayText = $name; TenantId = $tid }
+                    $global:TenantComboBox.Items[$i] = (New-GuiTenantRow -DisplayText $name.Trim() -TenantId $tid -HasDisplayName $true)
                     break
                 }
             }
@@ -622,25 +647,52 @@ function Update-TenantComboBox {
     <#
     .SYNOPSIS
         Populates the tenant dropdown with Graph app sessions from WCM (EOA-GraphApp-*).
+    .PARAMETER ResolveDisplayNames
+        If set, calls Microsoft Graph for every tenant in one pass (no deferred timer). Use the Refresh names button.
     .NOTES
-        Fills quickly with -SkipGraphLookup, then Start-TenantComboGraphNameRefresh resolves friendly names via Graph one tenant per timer tick.
+        Default: fills quickly with -SkipGraphLookup, then Start-TenantComboGraphNameRefresh resolves names one tenant per timer tick.
     #>
+    param([switch]$ResolveDisplayNames)
+
     if (-not $global:TenantComboBox) { return }
     Stop-TenantComboGraphNameRefresh
     $global:TenantComboBox.Items.Clear()
-    $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = "Interactive (browser)"; TenantId = $null }) | Out-Null
+    [void]$global:TenantComboBox.Items.Add((New-GuiTenantRow -DisplayText "Interactive (browser)" -TenantId $null -HasDisplayName $true))
     try {
         if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
-            $tenantList = Get-WCMTenantListWithNames -Prefix EOA -SkipGraphLookup
+            if ($ResolveDisplayNames) {
+                $tenantList = @(Get-WCMTenantListWithNames -Prefix EOA)
+            } else {
+                $tenantList = @(Get-WCMTenantListWithNames -Prefix EOA -SkipGraphLookup)
+            }
             foreach ($t in $tenantList) {
-                $global:TenantComboBox.Items.Add([pscustomobject]@{ DisplayText = $t.DisplayText; TenantId = $t.TenantId }) | Out-Null
+                $hasDisp = -not [string]::IsNullOrWhiteSpace($t.DisplayName)
+                [void]$global:TenantComboBox.Items.Add((New-GuiTenantRow -DisplayText $t.DisplayText -TenantId $t.TenantId -HasDisplayName $hasDisp))
             }
         }
     } catch { /* non-fatal */ }
     $global:TenantComboBox.DisplayMember = "DisplayText"
-    $global:TenantComboBox.ValueMember = "TenantId"
     Sync-TenantComboAlphabeticalOrder
-    Start-TenantComboGraphNameRefresh
+    if (-not $ResolveDisplayNames) {
+        Start-TenantComboGraphNameRefresh
+    }
+    elseif ($global:TenantComboBox.Items.Count -gt 1) {
+        $allMissing = $true
+        for ($i = 1; $i -lt $global:TenantComboBox.Items.Count; $i++) {
+            $row = $global:TenantComboBox.Items[$i]
+            if (-not $row) { continue }
+            if ([string]$row.DisplayText -ne 'Organization name not loaded') { $allMissing = $false; break }
+        }
+        if ($allMissing) {
+            $detail = $null
+            if (Get-Command Get-GraphTenantNameLookupLastError -ErrorAction SilentlyContinue) {
+                $detail = Get-GraphTenantNameLookupLastError
+            }
+            $txt = "Microsoft Graph did not return any organization names for your saved tenants.`n`nMost often the app is missing admin consent for the Microsoft Graph application permission Organization.Read.All.`n`nWhat to do:`n1) Entra ID > Enterprise applications > your Exchange Online Analyzer app > Permissions.`n2) Confirm Organization.Read.All shows Granted for your directory (not only Not granted).`n3) Run Manage App > Update App Perms from this app while signed in as Global Administrator, then Refresh names again."
+            if ($detail) { $txt += "`n`nGraph message (first failure):`n$detail" }
+            [System.Windows.Forms.MessageBox]::Show($txt, "Tenant names", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
+        }
+    }
 }
 
 function Show-GraphAppManagementDialog {
@@ -772,11 +824,18 @@ function Delete-XOAAppRegistration {
         return
     }
     $tenantList = @()
+    $prevWait = [System.Windows.Forms.Application]::UseWaitCursor
     try {
+        [System.Windows.Forms.Application]::UseWaitCursor = $true
+        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::WaitCursor
         if (Get-Command Get-WCMTenantListWithNames -ErrorAction SilentlyContinue) {
-            $tenantList = Get-WCMTenantListWithNames -Prefix EOA -SkipGraphLookup
+            $tenantList = @(Get-WCMTenantListWithNames -Prefix EOA)
         }
     } catch {}
+    finally {
+        [System.Windows.Forms.Application]::UseWaitCursor = $prevWait
+        [System.Windows.Forms.Cursor]::Current = [System.Windows.Forms.Cursors]::Default
+    }
     if ($tenantList.Count -eq 0) {
         [System.Windows.Forms.MessageBox]::Show("No app credentials found in Windows Credential Manager.", "Delete App", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information)
         return
@@ -891,7 +950,7 @@ function Connect-Tenant {
     try {
         if ($selectedTenantId) {
             # Use Graph app credentials from Windows Credential Manager (EOA-GraphApp-*)
-            Write-StatusMessage "Connecting via app credentials for tenant $selectedTenantId..." -Type Info
+            Write-StatusMessage "Connecting via saved app credentials..." -Type Info
             $token = $null
             $secToken = $null
             try {
@@ -899,7 +958,7 @@ function Connect-Tenant {
                     $token = Get-GraphAppTokenFromWCM -TenantId $selectedTenantId -Prefix EOA
                 }
                 if (-not $token) {
-                    throw "No app credentials found for tenant $selectedTenantId in Windows Credential Manager. Click Add App to create XOA app, or use Interactive (browser)."
+                    throw "No app credentials found for the selected saved tenant in Windows Credential Manager. Click Add App to create the XOA app, or use Interactive (browser)."
                 }
                 $secToken = ConvertTo-SecureString $token -AsPlainText -Force
                 Connect-MgGraph -AccessToken $secToken -NoWelcome -ErrorAction Stop
@@ -914,30 +973,45 @@ function Connect-Tenant {
         }
         $context = Get-MgContext
         $tenantId = $context.TenantId
-        
+        $organization = $null
+
         # Get organization name
         try {
             $organization = Get-MgOrganization -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($organization -and $organization.DisplayName) {
-                $global:TenantLabel.Text = "Tenant: $($organization.DisplayName) ($tenantId)"
+                $global:TenantLabel.Text = "Tenant: $($organization.DisplayName)"
                 $global:TenantLabel.ForeColor = [System.Drawing.Color]::Black
             } else {
-                $global:TenantLabel.Text = "Tenant: $tenantId"
+                $global:TenantLabel.Text = "Tenant: (organization name unavailable)"
                 $global:TenantLabel.ForeColor = [System.Drawing.Color]::Black
             }
         } catch {
-            $global:TenantLabel.Text = "Tenant: $tenantId"
+            $global:TenantLabel.Text = "Tenant: (organization name unavailable)"
             $global:TenantLabel.ForeColor = [System.Drawing.Color]::Black
         }
+
+        if ($selectedTenantId -and $organization -and $organization.DisplayName) {
+            try {
+                if (Get-Command Set-WCMTenantDisplayName -ErrorAction SilentlyContinue) {
+                    Set-WCMTenantDisplayName -TenantId $selectedTenantId -DisplayName $organization.DisplayName -Prefix EOA
+                }
+            } catch { /* non-fatal */ }
+            try { Update-TenantComboBox } catch { /* non-fatal */ }
+        }
         
-        $global:StatusLabel.Text = "Status: Connected to Tenant ID '$tenantId'"
+        if ($organization -and $organization.DisplayName) {
+            $global:StatusLabel.Text = "Status: Connected to $($organization.DisplayName)"
+            Write-StatusMessage "Successfully connected to $($organization.DisplayName)." -Type Success
+        } else {
+            $global:StatusLabel.Text = "Status: Connected (organization name unavailable)"
+            Write-StatusMessage "Successfully connected. Organization display name unavailable—ensure Organization.Read.All on the XOA app and run Refresh names." -Type Success
+        }
         $global:DisconnectButton.Enabled = $true
         $global:FindSecretsButton.Enabled = $true
         $global:SelectAppButton.Enabled = $true
         $global:ExpiredSecretsListBox.Enabled = $true
         if ($global:TenantComboBox) { $global:TenantComboBox.Enabled = $false }
         # Note: GenerateSecretButton is enabled only when an application is selected
-        Write-StatusMessage "Successfully connected to tenant: $tenantId" -Type Success
 
     } catch {
         $errorMsg = $_.Exception.Message
@@ -1694,6 +1768,25 @@ try {
     Write-Host "Attempting to load System.Drawing..."
     Add-Type -AssemblyName System.Drawing
     Write-Host "System.Drawing loaded."
+
+    # WinForms ComboBox + PSCustomObject often ignores DisplayMember and shows the wrong field; use a CLR row type with ToString() = label.
+    $guiTenantRowCs = @'
+namespace EntraSecretRotate {
+    public sealed class GuiTenantRow {
+        public string DisplayText { get; set; }
+        public string TenantId { get; set; }
+        public bool HasDisplayName { get; set; }
+        public override string ToString() { return DisplayText ?? string.Empty; }
+    }
+}
+'@
+    try {
+        Add-Type -TypeDefinition $guiTenantRowCs -ErrorAction Stop
+    } catch {
+        if ($_.Exception.Message -notmatch 'already exists|already been added') {
+            throw
+        }
+    }
 } catch {
     Write-Host "Error loading .NET types: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Failed to load required .NET components for the GUI. Ensure your PowerShell environment is healthy." -ForegroundColor Red
@@ -1722,6 +1815,18 @@ $global:TenantLabel = New-Object System.Windows.Forms.Label
 $global:ExpiredApplicationsData = @() # Store application objects with expired secrets
 $global:SelectedApplicationForSecret = $null # Set by ExpiredSecretsListBox selection OR Select Application dialog
 
+function New-GuiTenantRow {
+    param(
+        [Parameter(Mandatory = $true)][string]$DisplayText,
+        [AllowNull()][AllowEmptyString()][string]$TenantId = $null,
+        [bool]$HasDisplayName = $false
+    )
+    $r = New-Object EntraSecretRotate.GuiTenantRow
+    $r.DisplayText = $DisplayText
+    $r.TenantId = $TenantId
+    $r.HasDisplayName = $HasDisplayName
+    return $r
+}
 
 # Setup the GUI form and controls (Call function AFTER variables are declared)
 Setup-GUI
@@ -1737,6 +1842,8 @@ if ($global:NewSecretTextBox) { $global:NewSecretTextBox.Text = "" }
 # Clean up objects when the form is closed
 $global:Form.Dispose()
 if ($global:TenantComboBox) { $global:TenantComboBox.Dispose() }
+if ($global:RefreshTenantsButton) { $global:RefreshTenantsButton.Dispose() }
+if ($global:RefreshAllNamesButton) { $global:RefreshAllNamesButton.Dispose() }
 $global:ConnectButton.Dispose()
 $global:DisconnectButton.Dispose()
 $global:StatusLabel.Dispose()
