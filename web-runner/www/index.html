@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Entra Secret Rotate</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <h1>Entra Secret Rotate</h1>
+  <p class="muted">Uses the same Graph app registrations as XOA (EOA store). Create/update apps in XOA.</p>
+
+  <div class="card">
+    <h2>Tenant</h2>
+    <div class="row">
+      <label>App tenant
+        <select id="tenantSelect"></select>
+      </label>
+      <button type="button" id="btnRefreshTenants" class="small" title="Reload tenants from shared XOA credential store">↻</button>
+      <button type="button" id="btnConnect" class="success">Connect</button>
+      <button type="button" id="btnDisconnect" class="danger" disabled>Disconnect</button>
+    </div>
+    <div id="status" class="muted">Status: Disconnected</div>
+  </div>
+
+  <div class="card">
+    <h2>Applications</h2>
+    <div class="row">
+      <button type="button" id="btnFindExpired" disabled>Find Expired Secrets</button>
+      <button type="button" id="btnLoadApps" disabled>Select Application</button>
+      <label>Search <input type="text" id="appSearch" placeholder="filter by name" disabled /></label>
+    </div>
+    <p class="muted" id="appsHint">Connect, then find expired secrets or load all apps.</p>
+    <div class="tableWrap">
+      <table class="data" id="appsTable">
+        <thead>
+          <tr><th>Application</th><th>Detail</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Selected application</h2>
+    <div id="selectedApp" class="muted">None</div>
+    <div class="row" style="margin-top:0.75rem">
+      <button type="button" id="btnGenerate" disabled>Generate New Secret</button>
+      <button type="button" id="btnDeleteExpired" disabled>Delete Expired Secret</button>
+      <button type="button" id="btnAddAtr" disabled title="Add Barracuda XDR ATR application permissions">Add ATR Permissions</button>
+    </div>
+    <div style="margin-top:0.75rem">
+      <label for="secretText">New secret</label>
+      <div class="row">
+        <input type="text" id="secretText" class="secretBox" readonly placeholder="Generated secret appears once" />
+        <button type="button" id="btnCopySecret" disabled>Copy Secret</button>
+      </div>
+    </div>
+    <div id="actionMsg" class="muted" style="margin-top:0.5rem"></div>
+  </div>
+
+  <div class="card">
+    <h2>Activity</h2>
+    <pre id="log"></pre>
+  </div>
+
+  <footer>
+    <span id="footerTenant">Tenant: Not connected</span>
+    <span class="muted">App regs: manage in XOA · Shared EOA Graph store</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
